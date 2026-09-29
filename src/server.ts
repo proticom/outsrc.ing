@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -5,7 +6,9 @@ import { defaultConfigPath, defaultHome, loadConfigFile } from "./config.js";
 import { createMailbox, type Mailbox } from "./mailbox.js";
 import { listSettings } from "./settings.js";
 import { ensureOutsrcHome, appendHomeFile } from "./fs-home.js";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { DEFAULT_CALLER, parseCaller, type SendInput } from "./types.js";
 
@@ -112,6 +115,7 @@ async function main() {
   };
   await server.connect(new StdioServerTransport());
 }
-if (process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.js")) {
+// npm installs outsrc-mcp as a symlink, so compare real paths rather than the invoked name.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error: unknown) => { process.stderr.write(`${String(error)}\n`); process.exitCode = 1; });
 }
