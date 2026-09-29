@@ -16,4 +16,4 @@ Especially useful: ways for a caller to reach another caller's threads or reposi
 
 ## Release integrity
 
-Releases are published from GitHub Actions with npm trusted publishing (OIDC), so each version carries a provenance attestation. Check it with `npm audit signatures` after installing, or on the package's npm page.
+Releases after 0.2.0 are published from GitHub Actions with npm trusted publishing (OIDC), with no stored npm token, and carry a provenance attestation. Check it with `npm audit signatures` after installing, or on the package's npm page. Version 0.2.0 was published by the maintainer before trusted publishing could be configured, because npm requires a package to exist first.

@@ -31,16 +31,14 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Running the harness yourself
 
-outsrc is not on npm yet. Install it from a checkout. It needs Node 22.12 or later (22.x, 24.x or 26+), git, and at least one of the `claude`, `codex` or `grok` CLIs, logged in.
+It needs Node 22.12 or later (22.x, 24.x or 26+), git, and at least one of the `claude`, `codex` or `grok` CLIs, logged in.
 
 ```bash
-git clone https://github.com/proticom/outsrc.ing.git
-cd outsrc.ing
-npm install
-npm run build
-npm link
+npm install -g outsrc
 outsrc init
 ```
+
+Install it globally rather than running it through `npx`: agents launch the installed copy, and the npx cache moves. Upgrade with `npm install -g outsrc@latest`.
 
 `outsrc init` is safe to rerun and keeps existing settings. It:
 
@@ -178,6 +176,8 @@ None of this confines a task. A worktree is not a sandbox, and the filtered envi
 A task trusts the code it starts from: a task on someone else's branch (`ref`) runs that branch's code and settings with the task's permissions, so review such a branch first. A reviewed branch's `CLAUDE.md` or `AGENTS.md` still reaches the reviewer and can try to steer its answer, though the reviewer cannot edit or run anything. Grok skips a project's settings only while the folder is untrusted, so do not mark your home folder or `~/.outsrc` as trusted in Grok.
 
 ## Development
+
+From a checkout: `npm install`, `npm run build`, then `npm link` to put the checkout's `outsrc` on your PATH.
 
 `npm run verify` builds, type-checks, runs the tests, then repeats the MCP workflow against the built server. `npm test` runs the tests alone. Tests use real git worktrees and child processes with a fixture agent.
 
