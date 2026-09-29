@@ -1,0 +1,23 @@
+{
+  "review": "Critique",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against main",
+    "baseRef": "main",
+    "explicit": true
+  },
+  "threadId": "00000000-0000-4000-8000-000000000005",
+  "context": {
+    "repoRoot": "/private/tmp/claude-501/-Users-owner-projects-outsrc-ing/00000000-0000-0000-0000-000000000000/scratchpad/wraprepo",
+    "branch": "feature",
+    "summary": "Reviewing branch feature against main from merge-base e1069b2a70b79777dba4c58d44bfa5edbf81d434."
+  },
+  "grok": {
+    "status": 1,
+    "stderr": "warning: sandbox could not be applied: socket deny resolution failed: could not resolve runtime-socket deny path /var/run/docker.sock: endpoint is a symlink\nerror: could not apply the 'read-only' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.\n",
+    "stdout": ""
+  },
+  "result": null,
+  "rawOutput": "",
+  "parseError": "warning: sandbox could not be applied: socket deny resolution failed: could not resolve runtime-socket deny path /var/run/docker.sock: endpoint is a symlink\nerror: could not apply the 'read-only' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.\n"
+}

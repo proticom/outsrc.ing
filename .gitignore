@@ -1,0 +1,17 @@
+# Local memory store
+.gnosys/
+
+# Local git worktrees
+.worktrees/
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# macOS
+.DS_Store
+
+# Local environment and secrets
+.env*

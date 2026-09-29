@@ -1,0 +1,46 @@
+# Copy to ~/.outsrc/config.toml (or let `outsrc init` write one).
+# Paths must be absolute git checkouts on THIS machine. Agents cannot add repos via tools.
+
+[[repos]]
+alias = "example"
+path = "/absolute/path/to/your/repo"
+# Optional setup commands run once in a new worktree, before the first run.
+# setup = [["npm", "ci"]]
+# auto_commit = true
+# retention_days = 30
+
+# Drives openai/codex-plugin-cc, resolved from the pin in engines.lock.json (or Claude Code's copy).
+# Set command to codex-companion.mjs in a clone of that repository when neither is present.
+# adapter = "codex" calls the Codex CLI directly instead.
+[targets.codex]
+adapter = "codex-plugin"
+permissions = "auto"
+description = "Coding tasks and code review through the Codex plugin, including its built-in and adversarial reviewers."
+cost_note = "Uses this machine's Codex account; pricing depends on that account and selected model."
+
+[targets.codex.models]
+default = "gpt-5.6"
+allowed = ["gpt-5.6"]
+
+[targets.codex.effort]
+default = "medium"
+allowed = ["none", "minimal", "low", "medium", "high", "xhigh"]
+
+[targets.claude]
+adapter = "claude"
+permissions = "auto"
+command = "claude"
+args = []
+description = "Coding tasks and review through the locally installed Claude Code CLI."
+cost_note = "Uses this machine's Claude account. Configure model choices for your plan."
+
+[targets.claude.effort]
+default = "medium"
+allowed = ["low", "medium", "high", "xhigh", "max"]
+
+# Drives xai-org/grok-build-plugin-cc. adapter = "grok" calls the Grok Build CLI directly instead.
+[targets.grok]
+adapter = "grok-plugin"
+permissions = "auto"
+description = "Coding tasks and critique through the Grok Build plugin."
+cost_note = "Uses this machine's Grok account. Configure model choices for your plan."

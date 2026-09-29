@@ -1,0 +1,30 @@
+{
+  "review": "Adversarial Review",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against main",
+    "baseRef": "main",
+    "explicit": true
+  },
+  "threadId": "00000000-0000-4000-8000-000000000003",
+  "context": {
+    "repoRoot": "/private/tmp/claude-501/-Users-owner-projects-outsrc-ing/00000000-0000-0000-0000-000000000000/scratchpad/wraprepo",
+    "branch": "feature",
+    "summary": "Reviewing branch feature against main from merge-base e1069b2a70b79777dba4c58d44bfa5edbf81d434."
+  },
+  "codex": {
+    "status": 0,
+    "stderr": "",
+    "stdout": "{\"verdict\":\"approve\",\"summary\":\"No material defect is supported by the supplied diff. Division errors propagate to callers; no caller or contract establishes that this function must handle them.\",\"findings\":[],\"next_steps\":[]}",
+    "reasoning": []
+  },
+  "result": {
+    "verdict": "approve",
+    "summary": "No material defect is supported by the supplied diff. Division errors propagate to callers; no caller or contract establishes that this function must handle them.",
+    "findings": [],
+    "next_steps": []
+  },
+  "rawOutput": "{\"verdict\":\"approve\",\"summary\":\"No material defect is supported by the supplied diff. Division errors propagate to callers; no caller or contract establishes that this function must handle them.\",\"findings\":[],\"next_steps\":[]}",
+  "parseError": null,
+  "reasoningSummary": []
+}

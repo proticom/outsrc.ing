@@ -1,0 +1,9 @@
+# Default owner for all paths. Last matching pattern wins.
+* @edtadros
+
+# Ownership and security surfaces.
+/.github/CODEOWNERS @edtadros
+/.github/dependabot.yml @edtadros
+/.github/workflows/ @edtadros
+/SECURITY.md @edtadros
+/engines.lock.json @edtadros

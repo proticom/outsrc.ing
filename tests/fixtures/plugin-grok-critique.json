@@ -1,0 +1,70 @@
+{
+  "review": "Critique",
+  "target": {
+    "mode": "branch",
+    "label": "branch diff against main",
+    "baseRef": "main",
+    "explicit": true
+  },
+  "threadId": "00000000-0000-4000-8000-000000000006",
+  "context": {
+    "repoRoot": "/private/tmp/claude-501/-Users-owner-projects-outsrc-ing/00000000-0000-0000-0000-000000000000/scratchpad/wraprepo",
+    "branch": "feature",
+    "summary": "Reviewing branch feature against main from merge-base e1069b2a70b79777dba4c58d44bfa5edbf81d434."
+  },
+  "grok": {
+    "status": 0,
+    "stderr": "",
+    "stdout": "{\n  \"text\": \"{\\\"verdict\\\":\\\"needs-attention\\\",\\\"summary\\\":\\\"Do not ship. div() divides by b with no guard, so a zero divisor raises ZeroDivisionError on every call site.\\\",\\\"findings\\\":[{\\\"severity\\\":\\\"high\\\",\\\"title\\\":\\\"Unguarded division by zero\\\",\\\"body\\\":\\\"m.py defines div(a, b) as a bare return a/b. When b is 0 (or 0.0), Python raises ZeroDivisionError before any result is produced. Nothing in the function checks the divisor, catches the exception, or documents a caller contract. Any caller that passes a zero denominator fails hard on the only code path.\\\",\\\"file\\\":\\\"m.py\\\",\\\"line_start\\\":1,\\\"line_end\\\":2,\\\"confidence\\\":1,\\\"recommendation\\\":\\\"Reject b == 0 (and non-numeric inputs) before dividing, and return a defined error or raise a domain-specific exception with a message that names the divisor. Add a test that calls div with b=0 and asserts the chosen failure mode.\\\"}],\\\"next_steps\\\":[\\\"Add an explicit zero-divisor check in div before the division.\\\",\\\"Cover b=0 and b=0.0 with a unit test that asserts the failure mode.\\\"]}\",\n  \"stopReason\": \"end_turn\",\n  \"sessionId\": \"00000000-0000-4000-8000-000000000006\",\n  \"requestId\": \"00000000-0000-4000-8000-000000000007\",\n  \"thought\": \"The user wants me to review a code change focused on division by zero. The diff is tiny:\\n\",\n  \"usage\": {\n    \"input_tokens\": 30655,\n    \"cache_read_input_tokens\": 1152,\n    \"cache_creation_input_tokens\": 0,\n    \"output_tokens\": 369,\n    \"reasoning_tokens\": 115,\n    \"total_tokens\": 32176\n  },\n  \"num_turns\": 1,\n  \"total_cost_usd\": 0.021794,\n  \"total_cost_usd_ticks\": 217940000,\n  \"modelUsage\": {\n    \"grok-4.7-build\": {\n      \"inputTokens\": 30655,\n      \"outputTokens\": 369,\n      \"cacheReadInputTokens\": 1152,\n      \"cacheCreationInputTokens\": 0,\n      \"modelCalls\": 1,\n      \"costUSD\": 0.021794\n    }\n  },\n  \"structuredOutput\": {\n    \"verdict\": \"needs-attention\",\n    \"summary\": \"Do not ship. div() divides by b with no guard, so a zero divisor raises ZeroDivisionError on every call site.\",\n    \"findings\": [\n      {\n        \"severity\": \"high\",\n        \"title\": \"Unguarded division by zero\",\n        \"body\": \"m.py defines div(a, b) as a bare return a/b. When b is 0 (or 0.0), Python raises ZeroDivisionError before any result is produced. Nothing in the function checks the divisor, catches the exception, or documents a caller contract. Any caller that passes a zero denominator fails hard on the only code path.\",\n        \"file\": \"m.py\",\n        \"line_start\": 1,\n        \"line_end\": 2,\n        \"confidence\": 1,\n        \"recommendation\": \"Reject b == 0 (and non-numeric inputs) before dividing, and return a defined error or raise a domain-specific exception with a message that names the divisor. Add a test that calls div with b=0 and asserts the chosen failure mode.\"\n      }\n    ],\n    \"next_steps\": [\n      \"Add an explicit zero-divisor check in div before the division.\",\n      \"Cover b=0 and b=0.0 with a unit test that asserts the failure mode.\"\n    ]\n  }\n}"
+  },
+  "result": {
+    "text": "{\"verdict\":\"needs-attention\",\"summary\":\"Do not ship. div() divides by b with no guard, so a zero divisor raises ZeroDivisionError on every call site.\",\"findings\":[{\"severity\":\"high\",\"title\":\"Unguarded division by zero\",\"body\":\"m.py defines div(a, b) as a bare return a/b. When b is 0 (or 0.0), Python raises ZeroDivisionError before any result is produced. Nothing in the function checks the divisor, catches the exception, or documents a caller contract. Any caller that passes a zero denominator fails hard on the only code path.\",\"file\":\"m.py\",\"line_start\":1,\"line_end\":2,\"confidence\":1,\"recommendation\":\"Reject b == 0 (and non-numeric inputs) before dividing, and return a defined error or raise a domain-specific exception with a message that names the divisor. Add a test that calls div with b=0 and asserts the chosen failure mode.\"}],\"next_steps\":[\"Add an explicit zero-divisor check in div before the division.\",\"Cover b=0 and b=0.0 with a unit test that asserts the failure mode.\"]}",
+    "stopReason": "end_turn",
+    "sessionId": "00000000-0000-4000-8000-000000000006",
+    "requestId": "00000000-0000-4000-8000-000000000007",
+    "thought": "The user wants me to review a code change focused on division by zero. The diff is tiny:\n",
+    "usage": {
+      "input_tokens": 30655,
+      "cache_read_input_tokens": 1152,
+      "cache_creation_input_tokens": 0,
+      "output_tokens": 369,
+      "reasoning_tokens": 115,
+      "total_tokens": 32176
+    },
+    "num_turns": 1,
+    "total_cost_usd": 0.021794,
+    "total_cost_usd_ticks": 217940000,
+    "modelUsage": {
+      "grok-4.7-build": {
+        "inputTokens": 30655,
+        "outputTokens": 369,
+        "cacheReadInputTokens": 1152,
+        "cacheCreationInputTokens": 0,
+        "modelCalls": 1,
+        "costUSD": 0.021794
+      }
+    },
+    "structuredOutput": {
+      "verdict": "needs-attention",
+      "summary": "Do not ship. div() divides by b with no guard, so a zero divisor raises ZeroDivisionError on every call site.",
+      "findings": [
+        {
+          "severity": "high",
+          "title": "Unguarded division by zero",
+          "body": "m.py defines div(a, b) as a bare return a/b. When b is 0 (or 0.0), Python raises ZeroDivisionError before any result is produced. Nothing in the function checks the divisor, catches the exception, or documents a caller contract. Any caller that passes a zero denominator fails hard on the only code path.",
+          "file": "m.py",
+          "line_start": 1,
+          "line_end": 2,
+          "confidence": 1,
+          "recommendation": "Reject b == 0 (and non-numeric inputs) before dividing, and return a defined error or raise a domain-specific exception with a message that names the divisor. Add a test that calls div with b=0 and asserts the chosen failure mode."
+        }
+      ],
+      "next_steps": [
+        "Add an explicit zero-divisor check in div before the division.",
+        "Cover b=0 and b=0.0 with a unit test that asserts the failure mode."
+      ]
+    }
+  },
+  "rawOutput": "{\n  \"text\": \"{\\\"verdict\\\":\\\"needs-attention\\\",\\\"summary\\\":\\\"Do not ship. div() divides by b with no guard, so a zero divisor raises ZeroDivisionError on every call site.\\\",\\\"findings\\\":[{\\\"severity\\\":\\\"high\\\",\\\"title\\\":\\\"Unguarded division by zero\\\",\\\"body\\\":\\\"m.py defines div(a, b) as a bare return a/b. When b is 0 (or 0.0), Python raises ZeroDivisionError before any result is produced. Nothing in the function checks the divisor, catches the exception, or documents a caller contract. Any caller that passes a zero denominator fails hard on the only code path.\\\",\\\"file\\\":\\\"m.py\\\",\\\"line_start\\\":1,\\\"line_end\\\":2,\\\"confidence\\\":1,\\\"recommendation\\\":\\\"Reject b == 0 (and non-numeric inputs) before dividing, and return a defined error or raise a domain-specific exception with a message that names the divisor. Add a test that calls div with b=0 and asserts the chosen failure mode.\\\"}],\\\"next_steps\\\":[\\\"Add an explicit zero-divisor check in div before the division.\\\",\\\"Cover b=0 and b=0.0 with a unit test that asserts the failure mode.\\\"]}\",\n  \"stopReason\": \"end_turn\",\n  \"sessionId\": \"00000000-0000-4000-8000-000000000006\",\n  \"requestId\": \"00000000-0000-4000-8000-000000000007\",\n  \"thought\": \"The user wants me to review a code change focused on division by zero. The diff is tiny:\\n\",\n  \"usage\": {\n    \"input_tokens\": 30655,\n    \"cache_read_input_tokens\": 1152,\n    \"cache_creation_input_tokens\": 0,\n    \"output_tokens\": 369,\n    \"reasoning_tokens\": 115,\n    \"total_tokens\": 32176\n  },\n  \"num_turns\": 1,\n  \"total_cost_usd\": 0.021794,\n  \"total_cost_usd_ticks\": 217940000,\n  \"modelUsage\": {\n    \"grok-4.7-build\": {\n      \"inputTokens\": 30655,\n      \"outputTokens\": 369,\n      \"cacheReadInputTokens\": 1152,\n      \"cacheCreationInputTokens\": 0,\n      \"modelCalls\": 1,\n      \"costUSD\": 0.021794\n    }\n  },\n  \"structuredOutput\": {\n    \"verdict\": \"needs-attention\",\n    \"summary\": \"Do not ship. div() divides by b with no guard, so a zero divisor raises ZeroDivisionError on every call site.\",\n    \"findings\": [\n      {\n        \"severity\": \"high\",\n        \"title\": \"Unguarded division by zero\",\n        \"body\": \"m.py defines div(a, b) as a bare return a/b. When b is 0 (or 0.0), Python raises ZeroDivisionError before any result is produced. Nothing in the function checks the divisor, catches the exception, or documents a caller contract. Any caller that passes a zero denominator fails hard on the only code path.\",\n        \"file\": \"m.py\",\n        \"line_start\": 1,\n        \"line_end\": 2,\n        \"confidence\": 1,\n        \"recommendation\": \"Reject b == 0 (and non-numeric inputs) before dividing, and return a defined error or raise a domain-specific exception with a message that names the divisor. Add a test that calls div with b=0 and asserts the chosen failure mode.\"\n      }\n    ],\n    \"next_steps\": [\n      \"Add an explicit zero-divisor check in div before the division.\",\n      \"Cover b=0 and b=0.0 with a unit test that asserts the failure mode.\"\n    ]\n  }\n}",
+  "parseError": null
+}

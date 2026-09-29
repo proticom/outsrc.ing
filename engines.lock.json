@@ -1,0 +1,14 @@
+{
+  "codex-plugin": {
+    "source": "https://github.com/openai/codex-plugin-cc.git",
+    "path": "plugins/codex",
+    "version": "1.0.5",
+    "commit": "80c31f99570876c3ef40327838b0a2ca1ae2cd9c"
+  },
+  "grok-plugin": {
+    "source": "https://github.com/xai-org/grok-build-plugin-cc.git",
+    "path": "plugins/grok-build",
+    "version": "0.2.0",
+    "commit": "5a9f924a8d1ca802b3e6dc0ce0e1a602fb35ec9e"
+  }
+}

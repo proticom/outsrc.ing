@@ -1,0 +1,64 @@
+name: Plugin drift
+# Checks the latest upstream Codex and Grok Build plugins against the CLI contract outsrc
+# drives and the engines pinned in engines.lock.json. Opens one issue per drift.
+on:
+  schedule:
+    - cron: '23 14 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: |
+          git clone --depth 1 https://github.com/openai/codex-plugin-cc upstream/codex
+          git clone --depth 1 https://github.com/xai-org/grok-build-plugin-cc upstream/grok
+          echo "codex_sha=$(git -C upstream/codex rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          echo "grok_sha=$(git -C upstream/grok rev-parse --short HEAD)" >> "$GITHUB_ENV"
+      - id: contract
+        run: |
+          if node dist/cli.js plugins \
+            --codex upstream/codex/plugins/codex/scripts/codex-companion.mjs \
+            --grok upstream/grok/plugins/grok-build/scripts/grok-bridge.mjs > report.json; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          fi
+          cat report.json
+      - if: steps.contract.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          summary=$(jq -r '[.plugins[] | "\(.adapter) \(.version) \(.status)"] | join(", ")' report.json)
+          title="Plugin drift: ${summary}"
+          if gh issue list --state open --search "in:title \"${title}\"" --json title --jq '.[].title' | grep -Fxq "$title"; then
+            echo "Already reported: $title"
+            exit 0
+          fi
+          {
+            echo "The daily plugin check found upstream plugin changes outsrc has not verified."
+            echo
+            echo "- openai/codex-plugin-cc main: \`${codex_sha}\`"
+            echo "- xai-org/grok-build-plugin-cc main: \`${grok_sha}\`"
+            echo
+            echo "\`broken\` means the CLI contract outsrc drives changed: a subcommand, flag, session variable, status JSON or teardown hook. Fix \`src/plugins.ts\` before updating the plugin."
+            echo "\`unverified\` means the contract still matches but this version has not passed a live run."
+            echo
+            echo "To move the pin: \`node dist/cli.js engines pin <codex-plugin|grok-plugin> main\`, then \`npm run smoke:plugins\`. Commit \`engines.lock.json\` if it passes; revert it if not. Users get the new engine on their next \`outsrc init\`."
+            echo
+            echo '```json'
+            cat report.json
+            echo '```'
+          } > body.md
+          gh issue create --title "$title" --body-file body.md

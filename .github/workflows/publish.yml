@@ -1,0 +1,28 @@
+name: Publish to npm
+# A v* tag is the release trigger. npm trusted publishing (OIDC) authenticates; there is no npm token secret.
+on:
+  push:
+    tags:
+      - "v*"
+jobs:
+  publish:
+    runs-on: macos-latest
+    # The npm environment only accepts v* tags. npm's trusted publisher must name this environment exactly.
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          # No registry-url: it writes an .npmrc with an empty token that overrides OIDC.
+      - run: npm ci
+      - name: Tag matches package.json version
+        run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
+      - run: npm run verify
+      - run: npm publish --access public
