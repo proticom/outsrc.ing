@@ -13,8 +13,8 @@
   ],
   "type": "module",
   "bin": {
-    "outsrc-mcp": "./dist/server.js",
-    "outsrc": "./dist/cli.js"
+    "outsrc-mcp": "dist/server.js",
+    "outsrc": "dist/cli.js"
   },
   "files": [
     "dist",
