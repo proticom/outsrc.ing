@@ -54,6 +54,7 @@ class Mouth(tuple):
 SMILE = Mouth()                                  # the favicon's small smile
 BIG_SMILE = Mouth(hw=22, rise=8)                 # wider closed smile, content
 OOH = Mouth(hw=0, rise=0, orx=9, ory=11)         # small surprised "o"
+SUBTLE_SMILE = Mouth(hw=13, rise=3)             # barely there, for the static avatar
 SMIRK = Mouth(hw=16, rise=3, skew=7)             # right corner hitched up
 WRY = Mouth(hw=14, rise=-2, skew=-6)             # lopsided, left corner up over a slight frown
 WRY_MIRROR = Mouth(hw=14, rise=-2, skew=6)       # same, right corner up
@@ -127,13 +128,13 @@ def tilt(im, yaw, pitch, roll):
                         perspective_coeffs(dst, [(0, 0), (HI, 0), (HI, HI), (0, HI)]), Image.BICUBIC)
 
 
-def render(gx, gy, lid, mouth):
+def render(gx, gy, lid, mouth, size=OUT):
     arr = np.array(face)
     ink, glint = feature_mask(gx, gy, lid, mouth)
     arr[ink] = BLACK + (255,)
     arr[glint] = GLINT + (255,)
     im = tilt(Image.fromarray(arr, "RGBA"), yaw=-gx * 18, pitch=gy * 14, roll=gx * gy * -7)
-    return im.resize((OUT, OUT), Image.LANCZOS)
+    return im.resize((size, size), Image.LANCZOS)
 
 
 # ---------- timeline: long holds, short eased glances, quick blinks ----------
@@ -203,4 +204,6 @@ if __name__ == "__main__":
             tile.paste(small, (4, 4), small)
             sheet.paste(tile, (i * 40, row * 40))
     sheet.resize((sheet.width * 4, sheet.height * 4), Image.NEAREST).save("preview-32px.png")
+    # static 512 px avatar with full alpha, looking up and to the right
+    render(0.8, -0.7, 1.0, SUBTLE_SMILE, size=512).save("outsrc-bot-up-right-512.png")
     print(f"{len(frames)} frames, {sum(durs) / 1000:.1f}s loop")
