@@ -9,6 +9,7 @@ import { addWorktree, hideAgentConfig } from "./git.js";
 import { commandExists, JOB_MARKER, jobEnv, pidAlive, processIdentity, sameProcess, startWrapper, stopOwnedProcess, type ProcessRecord } from "./job.js";
 import { MAX_LOG_READ_BYTES, resolveLimits } from "./limits.js";
 import { branchName, filesystemPath, resolveInside, threadDir, threadsDir, worktreePath } from "./paths.js";
+import { discoverModels } from "./models.js";
 import { isVerified, pluginVersion } from "./plugin-contract.js";
 import { cancelInvocation, engineDir, isPluginAdapter, teardownInvocation } from "./plugins.js";
 import { wrapMessage } from "./prompt.js";
@@ -319,7 +320,7 @@ export function createMailbox(ctx: MailboxContext) {
     listRepos: () => ({ repos: ctx.config.repos.map(({ alias, path }) => ({ alias, path })) }),
     listTargets: () => ({ targets: Object.entries(ctx.config.targets).map(([name, target]) => ({
       name, adapter: adapter(target, name).adapter, available: commandExists(target.command),
-      models: target.models ?? null, effort: target.effort ?? null,
+      models: target.models ?? discoverModels(adapter(target, name).adapter, target.command), effort: target.effort ?? null,
       description: target.description ?? "", cost_note: target.costNote ?? "Not configured",
       resume: adapter(target, name).adapter !== "custom" || target.args.some((arg) => arg.includes("{session_id}")),
       ...pluginStatus(adapter(target, name)),

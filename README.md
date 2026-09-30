@@ -106,6 +106,19 @@ The MCP tools and the CLI commands return the same JSON.
 | `stop` | Cancel a running thread |
 | `discard` | Delete a finished thread's worktree and branch, keeping its results |
 
+### Models in list_targets
+
+A target with `models` in its config reports those. Otherwise `list_targets` asks the target's CLI each time it is called:
+
+| Adapter | Source | Default |
+| --- | --- | --- |
+| `claude` | the `initialize` response of `claude -p --input-format stream-json` (what the Agent SDK's `supportedModels()` reads) | the entry Claude calls `default` |
+| `codex`, `codex-plugin` | `codex debug models`, models shown in Codex's picker | the highest priority one |
+| `grok`, `grok-plugin` | `grok models` | the one marked `(default)` |
+| `custom` | none | `models` is `null` |
+
+The Codex and Grok plugin engines have no model-list command, so outsrc asks the CLI they run: `codex` from `PATH`, and `$GROK_BINARY` or `grok`. A CLI that is missing, logged out or prints something outsrc cannot read gives `models: null`. A model set in the vendor's own settings (such as `model` in `~/.claude/settings.json` or `~/.codex/config.toml`) still wins when a request names none. Discovered models are advice: only configured `models` restrict what `send` accepts. `effort` comes from config only.
+
 CLI only: `outsrc config set` and `unset` change settings, `outsrc prune` deletes finished worktrees past their retention period, `outsrc migrate` imports threads from earlier versions, and `outsrc plugins` checks the plugin engines.
 
 ## Repository options
