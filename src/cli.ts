@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { defaultConfigPath, defaultHome, loadConfigFile } from "./config.js";
 import { migrateLegacy } from "./migrate.js";
 import { changeSetting, listSettings } from "./settings.js";
@@ -7,7 +8,8 @@ import { createMailbox } from "./mailbox.js";
 import { installEngine, managedScript, readLock, resolveCommit, writeLockEntry } from "./engines.js";
 import { checkPluginContract, pluginVersion, type ContractReport } from "./plugin-contract.js";
 import { isPluginAdapter, resolvePluginScript, type PluginAdapter } from "./plugins.js";
-import { DEFAULT_CALLER, parseCaller, type SendInput } from "./types.js";
+import { startStreamServer } from "./streams.js";
+import { DEFAULT_CALLER, parseCaller, parseThreadId, type SendInput } from "./types.js";
 
 function pluginReports(explicit: Partial<Record<PluginAdapter, string>>): ContractReport[] {
   return (["codex-plugin", "grok-plugin"] as const).flatMap((adapter) => {
@@ -79,18 +81,72 @@ const HELP = `outsrc init [--repo <path>]... [--yes] [--json] [--plugins|--no-pl
        diff <thread_id> [--limit <n>] [--caller <id>] [--json]
        stop <thread_id> [--caller <id>] [--json]
        discard <thread_id> [--caller <id>] [--json]
+       streams [--thread <id>] [--port <n>] [--recent-minutes <n>] [--no-open]   (alias: watch)
 
 init sets up config and optional local MCP registration for local CLIs.
 Public install is the Outsrc bot from Bot Exchange; this CLI is for bot authors and advanced operators.
+
+streams opens a local browser grid of live run.log tails, one pane per working thread. It only reads
+files under the outsrc home; it never calls a vendor CLI or a model. See outsrc streams --help.
 
 Mailbox commands print JSON (same shapes as the stdio MCP tools). Pass --caller so each
 bot only sees its own threads; omit it on doctor/list_*/threads to act as the owner.
 `;
 
+const STREAMS_HELP = `outsrc streams [--thread <id>] [--port <n>] [--recent-minutes <n>] [--no-open]
+outsrc watch   (same command)
+
+Serves a grid of live run logs on http://127.0.0.1 and opens it in your browser.
+One pane per working thread: short id, target, status, branch and age, then the tail of the
+latest run's run.log. Panes follow new output; scroll up to pause, click "paused" to follow again.
+New threads appear without a restart. Finished threads stop growing and move to a muted strip
+(click one to show its log). Threads finished more than --recent-minutes ago (default 15) are hidden.
+
+  --thread <id>          Show only this thread, finished or not; waits for it if it does not exist yet
+  --port <n>             Listen on this port (default: a free one)
+  --recent-minutes <n>   How long finished threads stay in the strip (default 15)
+  --no-open              Print the URL without opening a browser
+
+The viewer reads $OUTSRC_HOME/threads (default ~/.outsrc) about once a second, only while a page is
+open. It never calls a vendor CLI or a model and writes nothing. The URL carries a random token and
+the server listens on 127.0.0.1 only. Ctrl-C stops the viewer; jobs keep running.
+`;
+
+function openBrowser(url: string): void {
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+  try { spawn(opener, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref(); } catch { /* the URL is printed anyway */ }
+}
+
+async function runStreams(argv: string[]): Promise<void> {
+  if (hasFlag(argv, "--help") || hasFlag(argv, "-h")) { process.stdout.write(STREAMS_HELP); return; }
+  let rest = argv.filter((arg) => arg !== "--no-open");
+  const thread = takeFlag(rest, "--thread"); rest = thread.rest;
+  const port = takeFlag(rest, "--port"); rest = port.rest;
+  const recent = takeFlag(rest, "--recent-minutes"); rest = recent.rest;
+  if (rest.length) throw new Error(`unknown argument: ${rest[0]}\n\n${STREAMS_HELP}`);
+  const portNumber = port.value === undefined ? 0 : Number(port.value);
+  if (!Number.isInteger(portNumber) || portNumber < 0 || portNumber > 65535) throw new Error("--port must be 0-65535");
+  const recentMinutes = recent.value === undefined ? 15 : Number(recent.value);
+  if (!Number.isFinite(recentMinutes) || recentMinutes < 0) throw new Error("--recent-minutes must be a number of minutes");
+  const server = await startStreamServer({
+    home: defaultHome(), port: portNumber, recentMs: recentMinutes * 60_000,
+    ...(thread.value !== undefined ? { thread: parseThreadId(thread.value) } : {}),
+  });
+  process.stdout.write(`outsrc streams: ${server.url}\nWatching ${defaultHome()}/threads. Ctrl-C stops the viewer; jobs keep running.\n`);
+  if (!hasFlag(argv, "--no-open")) openBrowser(server.url);
+  await new Promise<void>((resolve) => {
+    const stop = () => { void server.close().then(resolve); };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+  });
+}
+
 const command = process.argv[2] ?? "help";
 try {
   if (command === "help" || command === "--help" || command === "-h") {
     process.stdout.write(HELP);
+  } else if (command === "streams" || command === "watch") {
+    await runStreams(process.argv.slice(3));
   } else if (command === "init") {
     const options = parseInitArgs(process.argv.slice(3));
     const env = defaultInitEnv(defaultConfigPath(defaultHome()), options.json);
