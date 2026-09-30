@@ -178,6 +178,48 @@ The plugin scripts are the vendors' internal CLIs, not a documented API. outsrc 
 
 To move a pin, run `outsrc engines pin <codex-plugin|grok-plugin> <commit|branch|tag>`. It updates `engines.lock.json` only if the contract check passes. Then run `npm run smoke:plugins` and keep the change only if that passes too.
 
+## Update checks
+
+`outsrc updates refresh` checks whether Claude Code, Codex, Grok Build and outsrc itself are behind their latest release. It runs `claude --version`, `codex --version`, `grok --version`, `grok update --check --json` and reads the npm registry. It calls no model and costs no tokens. It never installs anything: you upgrade by hand, or ask the bot to after you say yes.
+
+`outsrc updates` prints the last result without checking again, and `outsrc doctor` includes the same summary under `updates`.
+
+State lives in two files under `~/.outsrc` (or `OUTSRC_HOME`), both readable by you only:
+
+- `updates.json`: when the last check ran, each product's installed and latest version (or the error), and `pending`, the products that are behind. Only `refresh` writes it. A pending entry keeps its `first_seen_at` until a newer release appears. A failed check keeps the previous entry.
+- `updates-ack.json`: the notifications already shown to you. Only `outsrc updates ack` writes it.
+
+Each pending update is a notification with the id `<product>@<latest>`, for example `claude@2.1.286`. `refresh` lists the ones it found for the first time under `new`, and `unread` lists every pending notification not yet acknowledged. A rerun that finds nothing newer announces nothing, and an acknowledged version stays quiet until a newer one ships.
+
+Run it a few times a day. cron and launchd start jobs with a short `PATH` that usually lacks `node` and the CLIs, and a CLI that cannot be found counts as not installed. Give the job your shell's `PATH` (the output of `echo $PATH`). With cron:
+
+```
+PATH=<your PATH>
+17 */6 * * * outsrc updates refresh >/dev/null 2>&1
+```
+
+On macOS with launchd, save this as `~/Library/LaunchAgents/ing.outsrc.updates.plist`, fill in `PATH` and the `outsrc` path (the output of `command -v outsrc`), then run `launchctl load` on the file:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ing.outsrc.updates</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/local/bin/outsrc</string><string>updates</string><string>refresh</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>your PATH</string></dict>
+  <key>StartInterval</key><integer>21600</integer>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+```
+
+### For bot authors
+
+When the bot next talks to its owner, it runs `outsrc updates --json` and, for each `unread` entry, tells the owner the product, installed version and latest version, and asks whether to upgrade. If the bot also reports to another agent, it forwards the same fields (`product`, `installed`, `latest`) there. After the owner has seen them, the bot runs `outsrc updates ack <id>...` (or `--all`) so they are not repeated. The bot upgrades only after the owner says yes.
+
 ## Limits
 
 outsrc checks that thread and run paths stay inside its state directory, and it signals a process only if it is still the job outsrc started. By default at most 4 threads work at once and a run is stopped after 2 hours (both settings). A run log stops growing at 1 MiB, and `log` returns at most 8 KiB.

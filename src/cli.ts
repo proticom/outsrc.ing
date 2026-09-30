@@ -10,6 +10,7 @@ import { checkPluginContract, pluginVersion, type ContractReport } from "./plugi
 import { isPluginAdapter, resolvePluginScript, type PluginAdapter } from "./plugins.js";
 import { startStreamServer } from "./streams.js";
 import { DEFAULT_CALLER, parseCaller, parseThreadId, type SendInput } from "./types.js";
+import { ack, ackFile, defaultProbe, readUpdates, refresh, unread, updatesFile } from "./updates.js";
 
 function pluginReports(explicit: Partial<Record<PluginAdapter, string>>): ContractReport[] {
   return (["codex-plugin", "grok-plugin"] as const).flatMap((adapter) => {
@@ -71,6 +72,7 @@ const HELP = `outsrc init [--repo <path>]... [--yes] [--json] [--plugins|--no-pl
        config [list] | config set <key> <value> | config unset <key>
        doctor | list_repos | list_targets | targets | threads | prune | migrate
        plugins [--codex <script>] [--grok <script>]
+       updates | updates refresh | updates ack <product@version>... | updates ack --all
        engines pin <codex-plugin|grok-plugin> <commit|branch|tag>
        send --repo <alias> --target <name> --message <text> [--caller <id>] [--json]
             [--thread-id <id>] [--request-id <id>] [--model <m>] [--effort <e>]
@@ -168,6 +170,20 @@ try {
       writeLockEntry(adapter, entry);
       writeJson({ pinned: true, entry, next: "Run npm run smoke:plugins. Commit engines.lock.json if it passes; revert it if not." });
     }
+  } else if (command === "updates") {
+    const [sub, ...rest] = process.argv.slice(3).filter((arg) => arg !== "--json");
+    const home = defaultHome();
+    const files = { state: updatesFile(home), acks: ackFile(home) };
+    if (sub === undefined || sub === "list") {
+      const state = readUpdates(home);
+      writeJson({ ...state, unread: unread(home, state), files });
+    } else if (sub === "refresh" && rest.length === 0) {
+      const { state, fresh } = await refresh(home, defaultProbe);
+      writeJson({ ...state, new: fresh, unread: unread(home, state), files });
+    } else if (sub === "ack" && rest.length > 0) {
+      const all = rest.includes("--all");
+      writeJson({ acked: ack(home, all ? "all" : rest.filter((arg) => arg !== "--all")) });
+    } else throw new Error("usage: outsrc updates [list] | updates refresh | updates ack <product@version>... | updates ack --all");
   } else if (command === "config") {
     const [sub, key, value, ...extra] = process.argv.slice(3).filter((arg) => arg !== "--json");
     const configPath = defaultConfigPath(defaultHome());
@@ -200,12 +216,15 @@ try {
         const targets = box.listTargets().targets;
         const plugins = Object.values(config.targets).flatMap((target) =>
           target.adapter && isPluginAdapter(target.adapter) && target.command ? [checkPluginContract(target.adapter, target.command)] : []);
+        // Reads the last `outsrc updates refresh`; doctor itself makes no network calls.
+        const updatesState = readUpdates(home);
         const report = {
           node: process.version,
           config: defaultConfigPath(home),
           repositories: box.listRepos().repos,
           targets,
           plugins,
+          updates: { checked_at: updatesState.checked_at, pending: updatesState.pending, unread: unread(home, updatesState) },
           note: "Checks configuration, executable discovery and the vendor plugin CLI contract. Does not authenticate providers or establish an execution security boundary.",
         };
         writeJson(report);
