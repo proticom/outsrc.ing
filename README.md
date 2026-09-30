@@ -51,7 +51,7 @@ Install it globally rather than running it through `npx`: agents launch the inst
 
 For agents and scripts, `outsrc init --json --repo <path> [--repo <path>] [--local claude,codex,grok] [--max-jobs <n|unlimited>] [--max-run-minutes <n|unlimited>]` prints one JSON event per line and exits with code 3 when a person has to act, such as logging in to a CLI. Rerun it after that step. Without `--local`, nothing is registered. A `settings` event lists the limits, repositories and targets so the agent can review them with the owner.
 
-`outsrc doctor` rechecks the configuration. `OUTSRC_HOME` moves the state directory away from `~/.outsrc`, which outsrc keeps readable by you only.
+`outsrc doctor` rechecks the configuration and asks the npm registry for the latest `outsrc`. Its JSON adds `update_available` (true only when the installed version is behind npm) and `version`: `{status, installed, latest}`, where `status` is `current`, `outdated`, `ahead` or `unknown`. Without `--json` it also prints one line to stderr, such as `outsrc 0.2.0 is installed; 0.3.0 is available. Upgrade with: npm install -g outsrc@latest`. Doctor never upgrades. If the registry cannot be reached within 3 seconds, `status` is `unknown` with an `error`, `update_available` is false and the exit code is unaffected. `OUTSRC_HOME` moves the state directory away from `~/.outsrc`, which outsrc keeps readable by you only.
 
 ## Settings
 
