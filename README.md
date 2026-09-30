@@ -108,6 +108,17 @@ The MCP tools and the CLI commands return the same JSON.
 
 CLI only: `outsrc config set` and `unset` change settings, `outsrc prune` deletes finished worktrees past their retention period, `outsrc migrate` imports threads from earlier versions, and `outsrc plugins` checks the plugin engines.
 
+## Watching jobs live
+
+`outsrc streams` (or `outsrc watch`) opens a grid of live agent logs in your browser, served from `127.0.0.1` on the machine that runs the jobs.
+
+- One pane per working thread. The header shows the short thread id, target, status, branch and run age. The body follows the tail of the latest run's `run.log`. Scroll up to pause; click "paused" to follow again.
+- New threads appear without a restart. With no working threads the page says so and keeps watching.
+- Finished threads stop growing and move to a muted strip for 15 minutes (`--recent-minutes`). Click one to show its log.
+- `--thread <id>` shows one thread only, finished or not. `--port <n>` fixes the port. `--no-open` prints the URL without opening a browser.
+
+The viewer reads `$OUTSRC_HOME/threads` (default `~/.outsrc`) about once a second, and only while a page is open. It never calls a vendor CLI or a model, writes nothing, and does not change what `send` or `inbox` report. The URL carries a random token. Stopping the viewer (Ctrl-C) leaves jobs running. It keeps no state of its own, so it outlives bot and outsrc upgrades and shows nothing once `~/.outsrc` is removed.
+
 ## Repository options
 
 ```toml
