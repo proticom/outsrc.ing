@@ -76,7 +76,7 @@ describe("send validation", () => {
       message: "do a thing",
       model: "bad",
     });
-    expect(result).toEqual({ ok: false, error: "model not allowed: bad" });
+    expect(result).toEqual({ ok: false, error: "model not allowed: bad. Allowed for fake: good (from config)" });
   });
 });
 

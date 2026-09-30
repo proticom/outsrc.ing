@@ -149,6 +149,24 @@ A custom target prints one JSON object with `kind` (`completed`, `needs_input` o
 
 Each finding has `priority` (`P0` to `P3`), `title`, `body`, `path` (or null) and `line` (or null).
 
+### Model cache
+
+A target with `models` in its config uses those. For every other target outsrc asks the vendor CLI for its models (a model-list command, not a model run, so it spends no tokens) and keeps the answer in `~/.outsrc/models.json` (`$OUTSRC_HOME/models.json`). `list_targets` reads that file, so a warm cache starts no vendor CLI. Each target shows `models_refreshed_at`, the time its entry was written, or null when its models come from config.
+
+- Miss: a target with no entry, or whose `adapter` or `command` changed since the entry was written, is discovered once and written back. On a first install the first `list_targets` (or `init`) fills the cache.
+- Stale: entries do not expire. outsrc serves an old entry until something refreshes it, so schedule a refresh.
+- Failed listing: a missing or logged-out CLI is cached as `models: null` until the next refresh.
+
+Refresh with `outsrc models refresh` (all targets) or `outsrc models refresh --target <name>`. `outsrc models` prints the cache. `outsrc list_targets --refresh`, or `list_targets` with `{"refresh": true}` over MCP, rediscovers before answering. To refresh twice a day with cron:
+
+```
+0 7,19 * * * /usr/bin/env outsrc models refresh >/dev/null 2>&1
+```
+
+On macOS a launchd agent with `StartCalendarInterval` at the same hours works the same way. Both need `PATH` to include the vendor CLIs.
+
+`send` refuses a `model` that is not in the target's configured or cached list, and the error lists the allowed models. When the cache has no list for the target (`models: null`) outsrc cannot check, and passes the model to the vendor CLI unchanged.
+
 ## Vendor plugin engines
 
 The `codex-plugin` and `grok-plugin` adapters drive the vendors' own Claude Code plugins, [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc) and [xai-org/grok-build-plugin-cc](https://github.com/xai-org/grok-build-plugin-cc), both Apache-2.0. The plugin launches the CLI and supplies the review prompts, output schema and, for Codex, the built-in reviewer. outsrc keeps the mailbox, worktrees, repository list and filtered environment. It runs the engine scripts directly; no Claude Code session is involved.

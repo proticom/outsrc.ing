@@ -1,3 +1,4 @@
+import type { Discover } from "./model-cache.js";
 import type { Limits } from "./limits.js";
 import type { AdapterTarget, Finding } from "./adapters.js";
 
@@ -144,4 +145,6 @@ export type MailboxContext = {
   retryAfterSeconds?: number;
   wrapperCommand?: string[];
   nodeExecutable?: string;
+  // Replaces vendor model discovery on a cache miss; tests use it to avoid spawning real CLIs.
+  discoverModels?: Discover;
 };

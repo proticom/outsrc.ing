@@ -8,6 +8,7 @@ import { buildInvocation, type AdapterTarget } from "./adapters.js";
 import { addWorktree, hideAgentConfig } from "./git.js";
 import { commandExists, JOB_MARKER, jobEnv, pidAlive, processIdentity, sameProcess, startWrapper, stopOwnedProcess, type ProcessRecord } from "./job.js";
 import { MAX_LOG_READ_BYTES, resolveLimits } from "./limits.js";
+import { resolveModels } from "./model-cache.js";
 import { branchName, filesystemPath, resolveInside, threadDir, threadsDir, worktreePath } from "./paths.js";
 import { isVerified, pluginVersion } from "./plugin-contract.js";
 import { cancelInvocation, engineDir, isPluginAdapter, teardownInvocation } from "./plugins.js";
@@ -197,7 +198,7 @@ export function createMailbox(ctx: MailboxContext) {
         if (!ctx.config.repos.some((item) => item.alias === repo)) throw new Error(`unknown repo: ${repo}`);
         const targetConfig = ctx.config.targets[target];
         if (!targetConfig) throw new Error(`unknown target: ${target}`);
-        if (input.model && targetConfig.models && !targetConfig.models.allowed.includes(input.model)) throw new Error(`model not allowed: ${input.model}`);
+        if (input.model) checkModel(target, targetConfig, input.model);
         if (input.effort && targetConfig.effort && !targetConfig.effort.allowed.includes(input.effort)) throw new Error(`effort not allowed: ${input.effort}`);
         const repoPath = ctx.config.repos.find((item) => item.alias === repo)?.path ?? "";
         if (input.base !== undefined) {
@@ -299,6 +300,22 @@ export function createMailbox(ctx: MailboxContext) {
       } catch { return []; }
     }).sort((a, b) => b.created_at.localeCompare(a.created_at)) };
   }
+  function cachedModels(targets: Record<string, TargetConfig>, refresh = false) {
+    const unconfigured = Object.fromEntries(Object.entries(targets).flatMap(([name, target]) => target.models ? [] : [[name, adapter(target, name)]]));
+    return resolveModels({ home: ctx.home, targets: unconfigured, refresh, ...(ctx.discoverModels ? { discover: ctx.discoverModels } : {}) });
+  }
+  // A model outside the configured or cached list is refused rather than passed to the vendor CLI. When discovery
+  // could not list the target's models there is nothing to check against, and the vendor CLI decides.
+  function checkModel(name: string, target: TargetConfig, model: string): void {
+    if (target.models) {
+      if (!target.models.allowed.includes(model)) throw new Error(`model not allowed: ${model}. Allowed for ${name}: ${target.models.allowed.join(", ")} (from config)`);
+      return;
+    }
+    const entry = cachedModels({ [name]: target })[name];
+    if (entry?.models && !entry.models.allowed.includes(model)) {
+      throw new Error(`model not allowed: ${model}. Allowed for ${name}: ${entry.models.allowed.join(", ")} (cached ${entry.refreshedAt}; run outsrc models refresh if the list is out of date)`);
+    }
+  }
   function discard(threadId: string) {
     try {
       const thread = loadThread(threadId);
@@ -317,13 +334,23 @@ export function createMailbox(ctx: MailboxContext) {
   }
   return {
     listRepos: () => ({ repos: ctx.config.repos.map(({ alias, path }) => ({ alias, path })) }),
-    listTargets: () => ({ targets: Object.entries(ctx.config.targets).map(([name, target]) => ({
-      name, adapter: adapter(target, name).adapter, available: commandExists(target.command),
-      models: target.models ?? null, effort: target.effort ?? null,
-      description: target.description ?? "", cost_note: target.costNote ?? "Not configured",
-      resume: adapter(target, name).adapter !== "custom" || target.args.some((arg) => arg.includes("{session_id}")),
-      ...pluginStatus(adapter(target, name)),
-    })) }),
+    listTargets: (options: { refresh?: boolean } = {}) => {
+      const cached = cachedModels(ctx.config.targets, options.refresh);
+      return { targets: Object.entries(ctx.config.targets).map(([name, target]) => ({
+        name, adapter: adapter(target, name).adapter, available: commandExists(target.command),
+        models: target.models ?? cached[name]?.models ?? null, models_refreshed_at: cached[name]?.refreshedAt ?? null,
+        effort: target.effort ?? null,
+        description: target.description ?? "", cost_note: target.costNote ?? "Not configured",
+        resume: adapter(target, name).adapter !== "custom" || target.args.some((arg) => arg.includes("{session_id}")),
+        ...pluginStatus(adapter(target, name)),
+      })) };
+    },
+    refreshModels: (name?: string) => {
+      if (name === undefined) return { refreshed: cachedModels(ctx.config.targets, true) };
+      const target = ctx.config.targets[name];
+      if (!target) throw new Error(`unknown target: ${name}`);
+      return { refreshed: cachedModels({ [name]: target }, true) };
+    },
     send, inbox, threads, discard,
     history(threadId: string) {
       try {
