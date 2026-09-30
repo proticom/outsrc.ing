@@ -11,6 +11,7 @@ import { checkPluginContract, pluginVersion, type ContractReport } from "./plugi
 import { isPluginAdapter, resolvePluginScript, type PluginAdapter } from "./plugins.js";
 import { startStreamServer } from "./streams.js";
 import { DEFAULT_CALLER, parseCaller, parseThreadId, type SendInput } from "./types.js";
+import { checkForUpdate, describeUpdate, installedVersion, registryFetchLatest, updateAvailable } from "./update-check.js";
 import { ack, ackFile, defaultProbe, readUpdates, refresh, unread, updatesFile } from "./updates.js";
 
 function pluginReports(explicit: Partial<Record<PluginAdapter, string>>): ContractReport[] {
@@ -75,7 +76,7 @@ function writeJson(body: unknown, pretty = true): void {
 const HELP = `outsrc init [--repo <path>]... [--yes] [--json] [--plugins|--no-plugins] [--local claude,codex,grok]
             [--max-jobs <n|unlimited>] [--max-run-minutes <n|unlimited>]
        config [list] | config set <key> <value> | config unset <key>
-       doctor | list_repos | list_targets [--refresh] | targets | threads | prune | migrate
+       doctor [--json] | list_repos | list_targets [--refresh] | targets | threads | prune | migrate
        models [list] | models refresh [--target <name>]
        plugins [--codex <script>] [--grok <script>]
        updates | updates refresh | updates ack <product@version>... | updates ack --all
@@ -222,18 +223,22 @@ try {
         const targets = box.listTargets().targets;
         const plugins = Object.values(config.targets).flatMap((target) =>
           target.adapter && isPluginAdapter(target.adapter) && target.command ? [checkPluginContract(target.adapter, target.command)] : []);
-        // Reads the last `outsrc updates refresh`; doctor itself makes no network calls.
+        const version = await checkForUpdate(installedVersion(), registryFetchLatest());
+        // Reads the last `outsrc updates refresh`; the only network call doctor makes is the npm probe above.
         const updatesState = readUpdates(home);
         const report = {
+          update_available: updateAvailable(version),
+          version,
           node: process.version,
           config: defaultConfigPath(home),
           repositories: box.listRepos().repos,
           targets,
           plugins,
           updates: { checked_at: updatesState.checked_at, pending: updatesState.pending, unread: unread(home, updatesState) },
-          note: "Checks configuration, executable discovery and the vendor plugin CLI contract. Does not authenticate providers or establish an execution security boundary.",
+          note: "Checks configuration, executable discovery, the vendor plugin CLI contract and whether npm has a newer outsrc. Does not upgrade, authenticate providers or establish an execution security boundary.",
         };
         writeJson(report);
+        if (!parsed.json) process.stderr.write(`${describeUpdate(version)}\n`);
         if (targets.some((target) => !target.available) || plugins.some((plugin) => plugin.status === "broken")) process.exitCode = 1;
         break;
       }
