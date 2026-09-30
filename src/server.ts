@@ -24,7 +24,7 @@ export async function handleTool(box: Mailbox, name: string, args: Record<string
   try {
     switch (name) {
       case "list_repos": return response(box.listRepos());
-      case "list_targets": return response(box.listTargets());
+      case "list_targets": return response(box.listTargets({ refresh: args.refresh === true }));
       case "threads": return response(box.threads());
       case "history": return response(box.history(text(args.thread_id)));
       case "send": {
@@ -68,7 +68,10 @@ export function makeServer(mailbox: () => Mailbox, configPath: string): McpServe
     try { return response(listSettings(configPath)); }
     catch (error) { return response({ ok: false, error: error instanceof Error ? error.message : String(error) }); }
   });
-  server.registerTool("list_targets", { description: "List available targets, configured models/effort, continuation support and owner-provided routing/cost notes.", inputSchema: {} }, async () => handleTool(mailbox(), "list_targets", {}));
+  server.registerTool("list_targets", {
+    description: "List available targets, their models and effort, continuation support and owner-provided routing/cost notes. Models not set in config come from a local cache refreshed by outsrc models refresh; models_refreshed_at says when. Pass refresh: true to ask each vendor CLI again, which is slow.",
+    inputSchema: { refresh: z.boolean().optional().describe("Rediscover models from each vendor CLI instead of reading the cache") },
+  }, async (args) => handleTool(mailbox(), "list_targets", args));
   server.registerTool("threads", { description: "List this caller's saved conversations, current status and recent progress. Recover a lost thread ID here. Other callers' threads are not visible.", inputSchema: {} }, async () => handleTool(mailbox(), "threads", {}));
   server.registerTool("history", { description: "List all runs, submitted messages and saved results in a thread.", inputSchema: { thread_id: z.string() } }, async (args) => handleTool(mailbox(), "history", args));
   server.registerTool("send", {

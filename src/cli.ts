@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { defaultConfigPath, defaultHome, loadConfigFile } from "./config.js";
 import { migrateLegacy } from "./migrate.js";
+import { modelCachePath, readModelCache } from "./model-cache.js";
 import { changeSetting, listSettings } from "./settings.js";
 import { defaultInitEnv, parseInitArgs, runInit } from "./init.js";
 import { createMailbox } from "./mailbox.js";
@@ -38,6 +39,7 @@ function takeFlag(argv: string[], name: string): { value?: string; rest: string[
 function parseMailboxArgs(argv: string[]): {
   caller: string | undefined;
   json: boolean;
+  refresh: boolean;
   flags: Record<string, string | undefined>;
   positionals: string[];
 } {
@@ -46,6 +48,8 @@ function parseMailboxArgs(argv: string[]): {
   rest = callerFlag.rest;
   const json = hasFlag(rest, "--json");
   rest = rest.filter((arg) => arg !== "--json");
+  const refresh = hasFlag(rest, "--refresh");
+  rest = rest.filter((arg) => arg !== "--refresh");
   const names = ["--repo", "--target", "--message", "--thread", "--thread-id", "--request-id", "--model", "--effort", "--kind", "--base", "--ref", "--run-id", "--offset", "--limit"] as const;
   const flags: Record<string, string | undefined> = {};
   for (const name of names) {
@@ -57,6 +61,7 @@ function parseMailboxArgs(argv: string[]): {
   return {
     caller: callerFlag.value !== undefined ? parseCaller(callerFlag.value) : undefined,
     json,
+    refresh,
     flags,
     positionals: rest,
   };
@@ -69,7 +74,8 @@ function writeJson(body: unknown, pretty = true): void {
 const HELP = `outsrc init [--repo <path>]... [--yes] [--json] [--plugins|--no-plugins] [--local claude,codex,grok]
             [--max-jobs <n|unlimited>] [--max-run-minutes <n|unlimited>]
        config [list] | config set <key> <value> | config unset <key>
-       doctor | list_repos | list_targets | targets | threads | prune | migrate
+       doctor | list_repos | list_targets [--refresh] | targets | threads | prune | migrate
+       models [list] | models refresh [--target <name>]
        plugins [--codex <script>] [--grok <script>]
        engines pin <codex-plugin|grok-plugin> <commit|branch|tag>
        send --repo <alias> --target <name> --message <text> [--caller <id>] [--json]
@@ -191,7 +197,7 @@ try {
     const parsed = parseMailboxArgs(process.argv.slice(3));
     // Owner CLI (no --caller) sees every thread for doctor/list/threads/prune.
     // Mailbox mutations and per-thread reads default to "local" when --caller is omitted.
-    const ownerCommands = new Set(["doctor", "list_repos", "repos", "list_targets", "targets", "threads", "prune", "migrate"]);
+    const ownerCommands = new Set(["doctor", "list_repos", "repos", "list_targets", "targets", "models", "threads", "prune", "migrate"]);
     const caller = parsed.caller ?? (ownerCommands.has(command) ? undefined : DEFAULT_CALLER);
     const box = createMailbox({ home, config, ...(caller !== undefined ? { caller } : {}) });
 
@@ -218,8 +224,16 @@ try {
         break;
       case "list_targets":
       case "targets":
-        writeJson(box.listTargets());
+        writeJson(box.listTargets({ refresh: parsed.refresh }));
         break;
+      case "models": {
+        const [sub, ...extra] = parsed.positionals;
+        if (extra.length || (sub !== undefined && sub !== "list" && sub !== "refresh")) throw new Error("usage: outsrc models [list] | models refresh [--target <name>]");
+        const target = parsed.flags["--target"];
+        if (sub === "refresh") writeJson({ path: modelCachePath(home), ...box.refreshModels(target) });
+        else writeJson({ path: modelCachePath(home), targets: readModelCache(home) });
+        break;
+      }
       case "threads":
         writeJson(box.threads());
         break;
