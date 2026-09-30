@@ -266,9 +266,11 @@ describe("needs_input", () => {
     if (!waiting.ok || waiting.status !== "needs_input") {
       throw new Error("expected needs_input");
     }
-    expect(waiting).toEqual({
+    expect(waiting).toMatchObject({
       ok: true, status: "needs_input", retry_after_seconds: 0, run_id: sent.run_id,
       message: "Which color should the result use?", question_id: sent.run_id, session_id: "fixture-session",
+      target: "fake", effort: null, model: null,
+      usage: { tokens_in: null, tokens_out: null, estimated_cost_usd: null, wall_minutes: expect.any(Number) },
     });
     const answered = await box.send({
       thread_id: sent.thread_id,
