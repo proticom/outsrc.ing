@@ -1,8 +1,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { MAX_LOG_BYTES } from "../src/limits.ts";
 import { parseThreadId, type RunSpec } from "../src/types.ts";
 import { getBaseCommit } from "../src/workspace.ts";
@@ -37,6 +37,78 @@ function fixture(code: string): RunSpec {
 const completed = `process.stdout.write(JSON.stringify({kind:"completed",message:"Fixture complete",sessionId:"fixture-session",findings:[]}));`;
 
 describe("standalone wrapper", () => {
+  test("keeps reported native tokens when the agent exceeds its deadline", async () => {
+    const spec = fixture(`process.stdout.write(JSON.stringify({usage:{input_tokens:17,output_tokens:4}}));setInterval(()=>{},1000);`);
+    spec.target.adapter = "claude";
+    spec.model = "requested-model";
+    spec.effort = "low";
+    spec.deadlineMs = 300;
+    const result = await run(spec);
+    expect(result).toMatchObject({ kind: "failed", message: expect.stringMatching(/^Agent execution failed: Error: Run exceeded the \d+ms deadline$/),
+      usage: { tokens_in: 17, tokens_out: 4, model: "requested-model", effort: "low" } });
+    expect(JSON.parse(readFileSync(join(spec.runDir, "result.json"), "utf8"))).toMatchObject({
+      kind: "failed", usage: { tokens_in: 17, tokens_out: 4 } });
+  });
+
+  test("persists completed Codex turn usage before cancellation or a malformed final answer", async () => {
+    const spec = fixture(`process.stdout.write('{"type":"turn.completed","usage":{"input_tokens":25,"output_tokens":6}}\\n');process.stdout.write('{"type":"turn.failed"');`);
+    spec.target.adapter = "codex";
+    const script = spec.target.args[0];
+    if (!script) throw new Error("Missing fixture executable");
+    writeFileSync(script, `#!${process.execPath}\n${readFileSync(script, "utf8")}`);
+    chmodSync(script, 0o700);
+    spec.target.command = script;
+    spec.target.args = [];
+    spec.model = "codex-model";
+    expect(await run(spec)).toMatchObject({ kind: "failed", usage: { tokens_in: 25, tokens_out: 6, model: "codex-model" } });
+    expect(JSON.parse(readFileSync(join(spec.runDir, "usage.json"), "utf8"))).toMatchObject({
+      tokens_in: 25, tokens_out: 6, model: "codex-model" });
+  });
+
+  test("reports native tokens on a cancelled finished run", async () => {
+    const spec = fixture(`import {writeFileSync} from 'node:fs';process.stdout.write(JSON.stringify({usage:{input_tokens:17,output_tokens:4},structured_output:{kind:"completed",message:"Done",findings:[]}}));writeFileSync(process.argv.at(-1),'1');`);
+    spec.target.adapter = "claude";
+    spec.prompt = join(spec.runDir, "cancelled");
+    expect(await run(spec)).toMatchObject({ kind: "cancelled", message: "Task cancelled", usage: { tokens_in: 17, tokens_out: 4 } });
+  });
+
+  test("retains metadata if output ends with malformed trailing bytes", async () => {
+    const spec = fixture(`process.stdout.write(JSON.stringify({usage:{input_tokens:17,output_tokens:4}}));setTimeout(()=>process.stdout.write('broken tail'),50);`);
+    spec.target.adapter = "grok";
+    expect(await run(spec)).toMatchObject({ kind: "failed", usage: { tokens_in: 17, tokens_out: 4 } });
+  });
+
+  test("persists measured usage even when result collection fails", async () => {
+    const spec = fixture(`process.stdout.write(JSON.stringify({session_id:"native-session",usage:{input_tokens:120,output_tokens:8},total_cost_usd:0.04,modelUsage:{"observed-model":{}},structured_output:{kind:"completed",message:"Native result",findings:[]}}));`);
+    spec.target.adapter = "claude";
+    spec.effort = "high";
+    spec.baseCommit = "missing-base-commit";
+    const clock = vi.spyOn(performance, "now").mockReturnValueOnce(1000).mockReturnValueOnce(121000);
+    try {
+      const result = await run(spec);
+      expect(result.kind).toBe("failed");
+      expect(JSON.parse(readFileSync(join(spec.runDir, "result.json"), "utf8")).usage).toEqual({
+        tokens_in: 120, tokens_out: 8, estimated_cost_usd: 0.04, wall_minutes: 2, model: "observed-model", effort: "high",
+      });
+    } finally { clock.mockRestore(); }
+  });
+
+  test("does not claim an effort that a custom invocation never passes", async () => {
+    const spec = fixture(completed);
+    spec.effort = "high";
+    expect((await run(spec)).usage).toMatchObject({ tokens_in: null, tokens_out: null, estimated_cost_usd: null, model: null, effort: null });
+  });
+  test("does not claim effort for a Codex plugin branch review", async () => {
+    const spec = fixture(`process.stdout.write(JSON.stringify({review:"Review",codex:{status:0},result:{verdict:"ok",summary:"Review complete",findings:[]}}));`);
+    const script = spec.target.args[0];
+    if (!script) throw new Error("missing fixture script");
+    spec.target = { adapter: "codex-plugin", command: script, args: [] };
+    spec.kind = "review";
+    spec.base = "HEAD";
+    spec.effort = "high";
+    expect(await run(spec)).toMatchObject({ kind: "completed", message: "Verdict: ok\n\nReview complete",
+      usage: { tokens_in: null, tokens_out: null, estimated_cost_usd: null, model: null, effort: null } });
+  });
   test("persists a native structured result without requiring SUMMARY.md", async () => {
     const spec = fixture(`process.stderr.write("agent diagnostic\\n");process.stdout.write(JSON.stringify({session_id:"native-session",structured_output:{kind:"completed",message:"Native result",findings:[{priority:"P2",title:"Missing retry",body:"Retry this operation",path:"src/client.ts",line:12}]}}));`);
     spec.target.adapter = "claude";

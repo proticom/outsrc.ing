@@ -12,6 +12,7 @@ import { engineDir, isPluginAdapter, teardownInvocation } from "./plugins.js";
 import { writeJson } from "./state.js";
 import { parseThreadId, type RunResult, type RunSpec } from "./types.js";
 import { collectWorkspaceDiff, commitWorkspace } from "./workspace.js";
+import { emptyUsage, readAdapterUsage } from "./usage.js";
 
 const RunSpecSchema: z.ZodType<RunSpec> = z.object({
   threadId: z.string().transform(parseThreadId),
@@ -40,6 +41,11 @@ function failure(message: string, sessionId: string | null): AgentOutput {
   return { kind: "failed", message, sessionId, findings: [] };
 }
 
+type ExecutionResult = { stdout: string; exitCode: number | null } & (
+  | { kind: "exited" }
+  | { kind: "failed"; error: unknown }
+);
+
 function execute(input: {
   command: string;
   args: string[];
@@ -47,8 +53,9 @@ function execute(input: {
   logPath: string;
   deadlineMs: number | null;
   env?: Record<string, string>;
-}): Promise<{ stdout: string; exitCode: number | null }> {
-  return new Promise((resolveResult, reject) => {
+  onStdout?: (stdout: string) => void;
+}): Promise<ExecutionResult> {
+  return new Promise((resolveResult) => {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       env: { ...process.env, ...input.env },
@@ -85,8 +92,8 @@ function execute(input: {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (error !== undefined) reject(error);
-      else resolveResult({ stdout: Buffer.concat(stdout).toString("utf8"), exitCode });
+      const output = { stdout: Buffer.concat(stdout).toString("utf8"), exitCode };
+      resolveResult(error === undefined ? { ...output, kind: "exited" } : { ...output, kind: "failed", error });
     }
     const timer = input.deadlineMs === null ? undefined : setTimeout(() => {
       timedOut = true;
@@ -99,10 +106,12 @@ function execute(input: {
     child.stdout.on("data", (chunk: Buffer) => {
       stdout.push(chunk);
       append(chunk);
+      try { input.onStdout?.(Buffer.concat(stdout).toString("utf8")); }
+      catch (error) { logError = error; }
     });
     child.stderr.on("data", append);
     child.once("close", (exitCode) => {
-      if (timedOut) finish(new Error(`Run exceeded the ${input.deadlineMs}ms deadline`), null);
+      if (timedOut) finish(new Error(`Run exceeded the ${input.deadlineMs}ms deadline`), exitCode);
       else if (logError !== undefined) finish(logError, null);
       else finish(undefined, exitCode);
     });
@@ -110,6 +119,8 @@ function execute(input: {
 }
 
 export async function run(spec: RunSpec): Promise<RunResult> {
+  const startedAt = performance.now();
+  let usage = emptyUsage();
   let output = failure("Agent did not run", spec.sessionId);
   let exitCode: number | null = null;
   let commit: string | null = null;
@@ -124,11 +135,14 @@ export async function run(spec: RunSpec): Promise<RunResult> {
     if (left <= 0) throw new Error(`Run exceeded the ${deadlineMs}ms deadline`);
     return left;
   }
-  function publish(result: RunResult): RunResult {
+  function publish(result: Omit<RunResult, "usage">): RunResult {
+    const recorded: RunResult = { ...result,
+      ...(existsSync(join(spec.runDir, "cancelled")) ? { kind: "cancelled", message: "Task cancelled" } : {}),
+      usage: { ...usage, wall_minutes: (performance.now() - startedAt) / 60_000 } };
     const temporary = join(spec.runDir, "result.json.tmp");
-    writeHomeFile(temporary, JSON.stringify(result));
+    writeHomeFile(temporary, JSON.stringify(recorded));
     renameSync(temporary, join(spec.runDir, "result.json"));
-    return result;
+    return recorded;
   }
   mkdirSync(spec.runDir, { recursive: true, mode: 0o700 }); try { chmodSync(spec.runDir, 0o700); } catch {}
   if (existsSync(join(spec.runDir, "cancelled"))) {
@@ -146,6 +160,7 @@ export async function run(spec: RunSpec): Promise<RunResult> {
       const [executable, ...args] = command;
       if (!executable) throw new Error("command is empty");
       const setup = await execute({ command: executable, args, cwd: spec.worktree, logPath, deadlineMs: timeLeft() });
+      if (setup.kind === "failed") throw setup.error;
       if (setup.exitCode !== 0) {
         exitCode = setup.exitCode;
         throw new Error(`exited with ${setup.exitCode ?? "a signal"}`);
@@ -167,9 +182,34 @@ export async function run(spec: RunSpec): Promise<RunResult> {
       dataDir,
       threadId: spec.threadId,
     });
-    let executed: { stdout: string; exitCode: number | null };
+    const ignoresEffort = (spec.target.adapter === "codex-plugin" && spec.kind !== "task" && spec.base !== null) ||
+      (spec.target.adapter === "custom" && !spec.target.args.some((arg) => arg.includes("{effort}")));
+    usage.effort = ignoresEffort ? null : spec.effort;
+    const ignoresModel = (spec.target.adapter === "codex-plugin" && spec.kind !== "task" && spec.base !== null) ||
+      (spec.target.adapter === "custom" && !spec.target.args.some((arg) => arg.includes("{model}")));
+    usage.model = ignoresModel ? null : spec.model;
+    let savedUsage = JSON.stringify(usage);
+    function captureUsage(stdout: string): void {
+      if (spec.target.adapter !== "codex") {
+        try { JSON.parse(stdout); }
+        catch { return; }
+      }
+      const reported = readAdapterUsage({ adapter: spec.target.adapter, stdout });
+      usage = { ...reported, model: reported.model ?? usage.model, effort: usage.effort };
+      const serialized = JSON.stringify(usage);
+      if (serialized === savedUsage) return;
+      writeJson(join(spec.runDir, "usage.json"), usage);
+      savedUsage = serialized;
+    }
+    writeJson(join(spec.runDir, "usage.json"), usage);
+    let executed: Awaited<ReturnType<typeof execute>>;
     try {
-      executed = await execute({ ...invocation, cwd: spec.worktree, logPath, deadlineMs: timeLeft() });
+      const supportsUsage = spec.target.adapter !== "custom" && spec.target.adapter !== "codex-plugin";
+      executed = await execute({ ...invocation, cwd: spec.worktree, logPath, deadlineMs: timeLeft(),
+        ...(supportsUsage ? { onStdout: captureUsage } : {}) });
+      exitCode = executed.exitCode;
+      if (supportsUsage) captureUsage(executed.stdout);
+      if (executed.kind === "failed") throw executed.error;
     } finally {
       if (isPluginAdapter(spec.target.adapter)) {
         const teardown = teardownInvocation(spec.target.adapter, spec.target.command, spec.worktree, dataDir);

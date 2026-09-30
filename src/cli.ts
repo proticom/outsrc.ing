@@ -86,6 +86,7 @@ const HELP = `outsrc init [--repo <path>]... [--yes] [--json] [--plugins|--no-pl
             [--kind task|review|adversarial_review] [--base <ref>] [--ref <ref>]
        inbox <thread_id> [--caller <id>] [--json]
        history <thread_id> [--caller <id>] [--json]
+       usage [--caller <id>] [--json]
        log <thread_id> [--run-id <id>] [--offset <n>] [--limit <n>] [--caller <id>] [--json]
        diff <thread_id> [--limit <n>] [--caller <id>] [--json]
        stop <thread_id> [--caller <id>] [--json]
@@ -99,7 +100,7 @@ streams opens a local browser grid of live run.log tails, one pane per working t
 files under the outsrc home; it never calls a vendor CLI or a model. See outsrc streams --help.
 
 Mailbox commands print JSON (same shapes as the stdio MCP tools). Pass --caller so each
-bot only sees its own threads; omit it on doctor/list_*/threads to act as the owner.
+bot only sees its own threads; omit it on doctor/list_*/threads/usage to act as the owner.
 `;
 
 const STREAMS_HELP = `outsrc streams [--thread <id>] [--port <n>] [--recent-minutes <n>] [--no-open]
@@ -214,7 +215,7 @@ try {
     const parsed = parseMailboxArgs(process.argv.slice(3));
     // Owner CLI (no --caller) sees every thread for doctor/list/threads/prune.
     // Mailbox mutations and per-thread reads default to "local" when --caller is omitted.
-    const ownerCommands = new Set(["doctor", "list_repos", "repos", "list_targets", "targets", "models", "threads", "prune", "migrate"]);
+    const ownerCommands = new Set(["doctor", "list_repos", "repos", "list_targets", "targets", "models", "threads", "usage", "prune", "migrate"]);
     const caller = parsed.caller ?? (ownerCommands.has(command) ? undefined : DEFAULT_CALLER);
     const box = createMailbox({ home, config, ...(caller !== undefined ? { caller } : {}) });
 
@@ -261,6 +262,12 @@ try {
       case "threads":
         writeJson(box.threads());
         break;
+      case "usage": {
+        const result = box.usage();
+        writeJson(result);
+        if (!result.ok) process.exitCode = 1;
+        break;
+      }
       case "migrate": {
         const migrated = migrateLegacy({ home, config });
         writeJson(migrated);
@@ -361,7 +368,7 @@ try {
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   process.exitCode = 1;
-  const mailbox = new Set(["send", "inbox", "history", "log", "diff", "stop", "discard"]);
+  const mailbox = new Set(["send", "inbox", "history", "usage", "log", "diff", "stop", "discard"]);
   if (mailbox.has(command)) process.stdout.write(`${JSON.stringify({ ok: false, error: message }, null, 2)}\n`);
   else process.stderr.write(`${message}\n`);
 }
