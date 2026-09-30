@@ -26,6 +26,7 @@ export async function handleTool(box: Mailbox, name: string, args: Record<string
       case "list_repos": return response(box.listRepos());
       case "list_targets": return response(box.listTargets());
       case "threads": return response(box.threads());
+      case "usage": return response(box.usage());
       case "history": return response(box.history(text(args.thread_id)));
       case "send": {
         const input: SendInput = {
@@ -71,6 +72,7 @@ export function makeServer(mailbox: () => Mailbox, configPath: string): McpServe
   server.registerTool("list_targets", { description: "List available targets, configured models/effort, continuation support and owner-provided routing/cost notes.", inputSchema: {} }, async () => handleTool(mailbox(), "list_targets", {}));
   server.registerTool("threads", { description: "List this caller's saved conversations, current status and recent progress. Recover a lost thread ID here. Other callers' threads are not visible.", inputSchema: {} }, async () => handleTool(mailbox(), "threads", {}));
   server.registerTool("history", { description: "List all runs, submitted messages and saved results in a thread.", inputSchema: { thread_id: z.string() } }, async (args) => handleTool(mailbox(), "history", args));
+  server.registerTool("usage", { description: "Read this caller's local usage for today and the last 7 days, including totals by target. Each metric has total and missing_runs. An incomplete total is null. No provider dashboards or network requests are used.", inputSchema: {} }, async () => handleTool(mailbox(), "usage", {}));
   server.registerTool("send", {
     description: "Start a task with repo + target + message, or continue a finished/waiting session with thread_id + message. Supply a stable request_id for retryable delivery. Returns a thread_id and run_id immediately. Poll inbox using its retry_after_seconds. Review kinds request findings without edits. With a plugin target (codex-plugin, grok-plugin), a review with base runs the vendor plugin's own diff review against that base; review ignores message text there, while adversarial_review uses it as focus. Without base, reviews run read-only in the vendor sandbox.",
     inputSchema: {

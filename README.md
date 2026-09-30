@@ -101,12 +101,41 @@ The MCP tools and the CLI commands return the same JSON.
 | `threads` | This caller's threads and their status |
 | `settings` | Every setting with its value, default and meaning (read-only) |
 | `history` | Every run in a thread, with its message and result |
+| `usage` | Local usage for today and the last 7 days, including totals by target |
 | `log` | A slice of a run's log |
 | `diff` | Changes since the thread started, committed or not (256 KiB by default) |
 | `stop` | Cancel a running thread |
 | `discard` | Delete a finished thread's worktree and branch, keeping its results |
 
 CLI only: `outsrc config set` and `unset` change settings, `outsrc prune` deletes finished worktrees past their retention period, `outsrc migrate` imports threads from earlier versions, and `outsrc plugins` checks the plugin engines.
+
+### Local usage and spend
+
+Run `outsrc usage --caller grok --json` or call the MCP `usage` tool. Omit `--caller` on the CLI to include all callers. The command reads saved runs on this computer. It does not contact providers, scrape dashboards, or send usage to a cloud service.
+
+Every successful `inbox` response and every run in `history` includes these fields, including working, waiting, failed, and cancelled runs:
+
+```json
+{
+  "target": "grok-plugin",
+  "effort": null,
+  "model": "grok-4.7-build",
+  "usage": {
+    "tokens_in": 30655,
+    "tokens_out": 369,
+    "estimated_cost_usd": 0.021794,
+    "wall_minutes": 2
+  }
+}
+```
+
+The numbers above illustrate the shape. `tokens_in` and `tokens_out` are the vendor's reported input/output counters. Separate cache and reasoning counters are not added. `estimated_cost_usd` is the vendor-reported USD cost estimate; outsrc does not apply a price table or infer a subscription charge. `model` is the vendor-reported model, or the sole model named in its `modelUsage` metadata. It is null when unreported or ambiguous, even if a model was requested. `effort` is the explicit setting passed in that run's invocation, not a guessed vendor default. Paths that ignore effort, including Codex plugin branch reviews, report null.
+
+Claude and Grok native envelopes expose counters and cost when provided. Codex native completed-turn events expose counters; cost and model remain null. Grok plugin review envelopes can expose usage. Custom adapters and Codex plugins currently have no supported usage metadata, so their tokens, cost, and model fields are null. Model-generated answer text is never interpreted as usage metadata.
+
+`wall_minutes` measures elapsed wrapper time, including setup, agent execution, plugin teardown, and result collection. It excludes time before the wrapper starts. Working runs, old records, and interrupted runs without a recorded duration have null wall minutes. Old records require no migration. Missing or invalid vendor metadata produces explicit nulls, never zero or invented numbers. A reported zero remains zero. Recorded metadata is retained if a later commit or result collection fails.
+
+The usage report has `as_of`, `today`, and `last_7_days`. Today starts at midnight in the local process time zone; the 7-day window is the preceding 168 hours. Runs are assigned by their submission time (`created_at`), including continuations, working runs, and retained discarded threads. Each window includes `since`, `runs`, the four numeric metrics, and a sorted `by_target` array with the same counts and metrics. Each metric is `{ "total": number | null, "missing_runs": number }`. A total is null if any included run lacks that metric, so known partial spend cannot appear as a complete total. Empty windows have zero runs and zero totals. Each saved run is counted once.
 
 ## Repository options
 

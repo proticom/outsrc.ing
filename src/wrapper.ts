@@ -12,6 +12,7 @@ import { engineDir, isPluginAdapter, teardownInvocation } from "./plugins.js";
 import { writeJson } from "./state.js";
 import { parseThreadId, type RunResult, type RunSpec } from "./types.js";
 import { collectWorkspaceDiff, commitWorkspace } from "./workspace.js";
+import { emptyUsage, readAdapterUsage } from "./usage.js";
 
 const RunSpecSchema: z.ZodType<RunSpec> = z.object({
   threadId: z.string().transform(parseThreadId),
@@ -110,6 +111,8 @@ function execute(input: {
 }
 
 export async function run(spec: RunSpec): Promise<RunResult> {
+  const startedAt = performance.now();
+  let usage = emptyUsage();
   let output = failure("Agent did not run", spec.sessionId);
   let exitCode: number | null = null;
   let commit: string | null = null;
@@ -124,11 +127,12 @@ export async function run(spec: RunSpec): Promise<RunResult> {
     if (left <= 0) throw new Error(`Run exceeded the ${deadlineMs}ms deadline`);
     return left;
   }
-  function publish(result: RunResult): RunResult {
+  function publish(result: Omit<RunResult, "usage">): RunResult {
+    const recorded = { ...result, usage: { ...usage, wall_minutes: (performance.now() - startedAt) / 60_000 } };
     const temporary = join(spec.runDir, "result.json.tmp");
-    writeHomeFile(temporary, JSON.stringify(result));
+    writeHomeFile(temporary, JSON.stringify(recorded));
     renameSync(temporary, join(spec.runDir, "result.json"));
-    return result;
+    return recorded;
   }
   mkdirSync(spec.runDir, { recursive: true, mode: 0o700 }); try { chmodSync(spec.runDir, 0o700); } catch {}
   if (existsSync(join(spec.runDir, "cancelled"))) {
@@ -167,6 +171,9 @@ export async function run(spec: RunSpec): Promise<RunResult> {
       dataDir,
       threadId: spec.threadId,
     });
+    const ignoresEffort = (spec.target.adapter === "codex-plugin" && spec.kind !== "task" && spec.base !== null) ||
+      (spec.target.adapter === "custom" && !spec.target.args.some((arg) => arg.includes("{effort}")));
+    usage.effort = ignoresEffort ? null : spec.effort;
     let executed: { stdout: string; exitCode: number | null };
     try {
       executed = await execute({ ...invocation, cwd: spec.worktree, logPath, deadlineMs: timeLeft() });
@@ -181,6 +188,7 @@ export async function run(spec: RunSpec): Promise<RunResult> {
       }
     }
     exitCode = executed.exitCode;
+    usage = { ...readAdapterUsage({ adapter: spec.target.adapter, stdout: executed.stdout }), effort: usage.effort };
     output = parseAgentOutput({ adapter: spec.target.adapter, stdout: executed.stdout, exitCode });
     output.sessionId ??= spec.sessionId;
     if (output.kind === "needs_input" && spec.target.adapter === "custom" &&

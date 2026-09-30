@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { MAX_LOG_BYTES } from "../src/limits.ts";
 import { parseThreadId, type RunSpec } from "../src/types.ts";
 import { getBaseCommit } from "../src/workspace.ts";
@@ -37,6 +37,37 @@ function fixture(code: string): RunSpec {
 const completed = `process.stdout.write(JSON.stringify({kind:"completed",message:"Fixture complete",sessionId:"fixture-session",findings:[]}));`;
 
 describe("standalone wrapper", () => {
+  test("persists measured usage even when result collection fails", async () => {
+    const spec = fixture(`process.stdout.write(JSON.stringify({session_id:"native-session",usage:{input_tokens:120,output_tokens:8},total_cost_usd:0.04,modelUsage:{"observed-model":{}},structured_output:{kind:"completed",message:"Native result",findings:[]}}));`);
+    spec.target.adapter = "claude";
+    spec.effort = "high";
+    spec.baseCommit = "missing-base-commit";
+    const clock = vi.spyOn(performance, "now").mockReturnValueOnce(1000).mockReturnValueOnce(121000);
+    try {
+      const result = await run(spec);
+      expect(result.kind).toBe("failed");
+      expect(JSON.parse(readFileSync(join(spec.runDir, "result.json"), "utf8")).usage).toEqual({
+        tokens_in: 120, tokens_out: 8, estimated_cost_usd: 0.04, wall_minutes: 2, model: "observed-model", effort: "high",
+      });
+    } finally { clock.mockRestore(); }
+  });
+
+  test("does not claim an effort that a custom invocation never passes", async () => {
+    const spec = fixture(completed);
+    spec.effort = "high";
+    expect((await run(spec)).usage).toMatchObject({ tokens_in: null, tokens_out: null, estimated_cost_usd: null, model: null, effort: null });
+  });
+  test("does not claim effort for a Codex plugin branch review", async () => {
+    const spec = fixture(`process.stdout.write(JSON.stringify({review:"Review",codex:{status:0},result:{verdict:"ok",summary:"Review complete",findings:[]}}));`);
+    const script = spec.target.args[0];
+    if (!script) throw new Error("missing fixture script");
+    spec.target = { adapter: "codex-plugin", command: script, args: [] };
+    spec.kind = "review";
+    spec.base = "HEAD";
+    spec.effort = "high";
+    expect(await run(spec)).toMatchObject({ kind: "completed", message: "Verdict: ok\n\nReview complete",
+      usage: { tokens_in: null, tokens_out: null, estimated_cost_usd: null, model: null, effort: null } });
+  });
   test("persists a native structured result without requiring SUMMARY.md", async () => {
     const spec = fixture(`process.stderr.write("agent diagnostic\\n");process.stdout.write(JSON.stringify({session_id:"native-session",structured_output:{kind:"completed",message:"Native result",findings:[{priority:"P2",title:"Missing retry",body:"Retry this operation",path:"src/client.ts",line:12}]}}));`);
     spec.target.adapter = "claude";
