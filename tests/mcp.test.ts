@@ -36,6 +36,7 @@ test("stdio exposes tools, reads config, and validates input", async () => {
       "settings",
       "stop",
       "threads",
+      "usage",
     ]);
 
     const repos = await client.callTool({ name: "list_repos", arguments: {} });

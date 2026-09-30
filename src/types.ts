@@ -1,6 +1,7 @@
 import type { Discover } from "./model-cache.js";
 import type { Limits } from "./limits.js";
 import type { AdapterTarget, Finding } from "./adapters.js";
+import type { RunUsage } from "./usage.js";
 
 export type ThreadId = string & { readonly __brand: "ThreadId" };
 export type RunId = string & { readonly __brand: "RunId" };
@@ -105,6 +106,7 @@ export type RunSpec = {
   deadlineMs?: number | null;
 };
 export type RunResult = {
+  usage: RunUsage;
   kind: "completed" | "needs_input" | "failed" | "cancelled";
   message: string;
   sessionId: string | null;
@@ -130,11 +132,17 @@ export type SendResult =
   | { ok: true; delivered: true; thread_id: ThreadId; run_id: string }
   | { ok: false; error: string };
 export type ThreadStatus = "working" | "needs_input" | "succeeded" | "failed" | "cancelled";
-export type InboxResult =
+export type UsageFields = {
+  target: string;
+  effort: string | null;
+  model: string | null;
+  usage: Omit<RunUsage, "model" | "effort">;
+};
+export type InboxResult = (
   | { ok: true; status: "working"; retry_after_seconds: number; run_id: string; progress: string }
   | { ok: true; status: "needs_input"; retry_after_seconds: number; run_id: string; message: string; question_id: string; session_id: string | null }
   | { ok: true; status: "succeeded" | "failed" | "cancelled"; run_id: string; message: string; branch: string; worktree: string; diffstat: { raw: string }; exit_code: number | null; session_id: string | null; findings: Finding[]; commit: string | null }
-  | { ok: false; error: string };
+) & UsageFields | { ok: false; error: string };
 export type LogResult = { ok: true; text: string } | { ok: false; error: string };
 export type StopResult = { ok: true; stopped: true } | { ok: false; error: string };
 export type MailboxContext = {

@@ -4,6 +4,7 @@ import { writeHomeFile } from "./fs-home.js";
 import { join } from "node:path";
 import { z } from "zod";
 import { FindingSchema } from "./adapters.js";
+import { emptyUsage, RunUsageSchema } from "./usage.js";
 import { parseAlias, parseRunId, parseTargetName, parseThreadId, STORAGE_ID } from "./types.js";
 
 export const ThreadSchema = z.object({
@@ -31,6 +32,7 @@ export const RunSchema = z.object({
   sessionId: z.string().nullable(),
 });
 export const ResultSchema = z.object({
+  usage: RunUsageSchema.default(emptyUsage),
   kind: z.enum(["completed", "needs_input", "failed", "cancelled"]),
   message: z.string(),
   sessionId: z.string().nullable(),
@@ -59,4 +61,8 @@ export function runDirectory(threadDirectory: string, runId: string): string {
 export function readResult(directory: string) {
   const file = join(directory, "result.json");
   return existsSync(file) ? ResultSchema.parse(readJson(file)) : null;
+}
+export function readRunUsage(directory: string) {
+  try { return RunUsageSchema.parse(readJson(join(directory, "usage.json"))); }
+  catch { return emptyUsage(); }
 }

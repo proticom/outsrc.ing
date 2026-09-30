@@ -13,9 +13,10 @@ import { branchName, filesystemPath, resolveInside, threadDir, threadsDir, workt
 import { isVerified, pluginVersion } from "./plugin-contract.js";
 import { cancelInvocation, engineDir, isPluginAdapter, teardownInvocation } from "./plugins.js";
 import { wrapMessage } from "./prompt.js";
-import { ProcessSchema, readJson, readResult, RunSchema, ThreadSchema, writeJson } from "./state.js";
+import { ProcessSchema, readJson, readResult, readRunUsage, RunSchema, ThreadSchema, writeJson } from "./state.js";
 import { collectWorkspaceDiff, getBaseCommit } from "./workspace.js";
-import { DEFAULT_CALLER, parseAlias, parseRunId, parseTargetName, parseThreadId, type InboxResult, type MailboxContext, type RunRecord, type RunResult, type RunSpec, type SendInput, type SendResult, type TargetConfig, type ThreadId, type ThreadRecord } from "./types.js";
+import { DEFAULT_CALLER, MINTED_THREAD_ID, parseAlias, parseRunId, parseTargetName, parseThreadId, type InboxResult, type MailboxContext, type RunRecord, type RunResult, type RunSpec, type SendInput, type SendResult, type TargetConfig, type ThreadId, type ThreadRecord, type UsageFields } from "./types.js";
+import { aggregateUsage, emptyUsage, type UsageSample } from "./usage.js";
 
 function id(): string { return randomBytes(8).toString("hex"); }
 function adapter(target: TargetConfig, name: string): AdapterTarget {
@@ -39,7 +40,7 @@ function pluginStatus(target: AdapterTarget) {
 }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function failedResult(message: string, sessionId: string | null = null): RunResult {
-  return { kind: "failed", message, sessionId, findings: [], exitCode: null, finishedAt: new Date().toISOString(), diffstat: "", commit: null };
+  return { kind: "failed", message, sessionId, findings: [], exitCode: null, finishedAt: new Date().toISOString(), diffstat: "", commit: null, usage: emptyUsage() };
 }
 const RequestSchema = z.object({
   fingerprint: z.string(), threadId: z.string().transform(parseThreadId), runId: z.string().transform(parseRunId),
@@ -90,13 +91,13 @@ export function createMailbox(ctx: MailboxContext) {
     const result = readResult(dir);
     if (result) return result;
     if (existsSync(join(dir, "cancelled"))) {
-      const cancelled: RunResult = { ...failedResult("Task cancelled", run.sessionId), kind: "cancelled" };
+      const cancelled: RunResult = { ...failedResult("Task cancelled", run.sessionId), kind: "cancelled", usage: readRunUsage(dir) };
       writeJson(join(dir, "result.json"), cancelled);
       return cancelled;
     }
     if (alive) return null;
     if (started) {
-      const failed = failedResult("Agent wrapper stopped without publishing a result", run.sessionId);
+      const failed = { ...failedResult("Agent wrapper stopped without publishing a result", run.sessionId), usage: readRunUsage(dir) };
       writeJson(join(dir, "result.json"), failed);
       return failed;
     }
@@ -119,22 +120,37 @@ export function createMailbox(ctx: MailboxContext) {
       const thread = loadThread(threadId);
       const { dir, run } = current(thread);
       const result = resultFor(thread);
+      const fields = usageFields(thread, result);
       if (!result) {
         const age = Math.max(0, Date.now() - Date.parse(run.createdAt));
         const retry = ctx.retryAfterSeconds ?? Math.min(300, 30 * 2 ** Math.floor(age / 120_000));
-        return { ok: true, status: "working", retry_after_seconds: retry, run_id: run.id, progress: tail(dir).trim().split("\n").slice(-4).join("\n") };
+        return { ...fields, ok: true, status: "working", retry_after_seconds: retry, run_id: run.id, progress: tail(dir).trim().split("\n").slice(-4).join("\n") };
       }
       if (result.kind === "needs_input") return {
-        ok: true, status: "needs_input", retry_after_seconds: 0, run_id: run.id,
+        ...fields, ok: true, status: "needs_input", retry_after_seconds: 0, run_id: run.id,
         message: result.message, question_id: run.id, session_id: result.sessionId,
       };
       return {
-        ok: true, status: result.kind === "completed" ? "succeeded" : result.kind,
+        ...fields, ok: true, status: result.kind === "completed" ? "succeeded" : result.kind,
         run_id: run.id, message: result.message, branch: thread.branch, worktree: thread.worktree,
         diffstat: { raw: result.diffstat }, exit_code: result.exitCode,
         session_id: result.sessionId, findings: result.findings, commit: result.commit,
       };
     } catch (error) { return { ok: false, error: errorMessage(error) }; }
+  }
+  function usageFields(thread: ThreadRecord, result: RunResult | null): UsageFields {
+    const { model, effort, ...usage } = result?.usage ?? emptyUsage();
+    return { target: thread.target, effort, model, usage };
+  }
+  function savedRuns(thread: ThreadRecord) {
+    const root = join(threadDir(ctx.home, thread.id), "runs");
+    return readdirSync(root).flatMap((runId) => {
+      let directory: string;
+      try { directory = storedRunDir(thread.id, runId); }
+      catch { return []; }
+      const run = RunSchema.parse(readJson(join(directory, "run.json")));
+      return [{ run, result: run.id === thread.latestRunId ? resultFor(thread) : readResult(directory) }];
+    }).sort((a, b) => a.run.createdAt.localeCompare(b.run.createdAt));
   }
   function replayRequest(file: string, requestFingerprint: string): SendResult {
     const previous = RequestSchema.parse(readJson(file));
@@ -352,21 +368,33 @@ export function createMailbox(ctx: MailboxContext) {
       return { refreshed: cachedModels({ [name]: target }, true) };
     },
     send, inbox, threads, discard,
+    usage() {
+      try {
+        const samples: UsageSample[] = [];
+        for (const name of existsSync(threadsDir(ctx.home)) ? readdirSync(threadsDir(ctx.home)) : []) {
+          if (!MINTED_THREAD_ID.test(name)) continue;
+          let thread: ThreadRecord;
+          try { thread = loadThread(name); }
+          catch (error) {
+            if (errorMessage(error) === `unknown thread_id: ${name}`) continue;
+            throw error;
+          }
+          for (const { run, result } of savedRuns(thread)) {
+            samples.push({ target: thread.target, created_at: run.createdAt, usage: result?.usage ?? emptyUsage() });
+          }
+        }
+        return aggregateUsage(samples);
+      } catch (error) { return { ok: false, error: errorMessage(error) }; }
+    },
     history(threadId: string) {
       try {
         const thread = loadThread(threadId);
-        const root = join(threadDir(ctx.home, thread.id), "runs");
-        return { ok: true, thread_id: thread.id, runs: readdirSync(root).flatMap((runId) => {
-          let directory: string;
-          try { directory = storedRunDir(thread.id, runId); }
-          catch { return []; }
-          const run = RunSchema.parse(readJson(join(directory, "run.json")));
-          const result = readResult(directory);
-          return [{ run_id: run.id, request_id: run.requestId, created_at: run.createdAt, message: run.message,
+        return { ok: true, thread_id: thread.id, runs: savedRuns(thread).map(({ run, result }) => {
+          return { ...usageFields(thread, result), run_id: run.id, request_id: run.requestId, created_at: run.createdAt, message: run.message,
             status: result ? (result.kind === "completed" ? "succeeded" : result.kind) : "working",
             session_id: result?.sessionId ?? run.sessionId, final_message: result?.message ?? null,
-            findings: result?.findings ?? [], exit_code: result?.exitCode ?? null }];
-        }).sort((a, b) => a.created_at.localeCompare(b.created_at)) };
+            findings: result?.findings ?? [], exit_code: result?.exitCode ?? null };
+        }) };
       } catch (error) { return { ok: false, error: errorMessage(error) }; }
     },
     log(input: { thread_id: string; run_id?: string; offset?: number; limit?: number }) {

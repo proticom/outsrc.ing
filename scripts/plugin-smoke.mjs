@@ -98,6 +98,9 @@ async function smoke(adapter) {
     assert.equal(done.status, "succeeded");
     assert.equal(done.message, "plugin mailbox passed");
     assert.equal(done.session_id, asked.session_id);
+    assert.equal(done.usage.tokens_in, null);
+    assert.equal(done.usage.tokens_out, null);
+    report.phases[1].usage = done.usage;
 
     const review = sendSchema.parse(await call("send", {
       repo: "demo", target: "engine", effort: "low", kind: "adversarial_review", ref: "feature", base: "main",
@@ -107,6 +110,13 @@ async function smoke(adapter) {
     report.phases.push({ phase: "adversarial_review", status: reviewed.status, message: reviewed.message ?? null, findings: reviewed.findings ?? [] });
     assert.equal(reviewed.status, "succeeded");
     assert.match(String(reviewed.message), /^Verdict: /);
+    if (adapter === "grok-plugin") {
+      z.object({ tokens_in: z.number().int().nonnegative(), tokens_out: z.number().int().nonnegative() }).parse(reviewed.usage);
+    } else {
+      assert.equal(reviewed.usage.tokens_in, null);
+      assert.equal(reviewed.usage.tokens_out, null);
+    }
+    report.phases[2].usage = reviewed.usage;
 
     report.passed = true;
   } catch (error) {

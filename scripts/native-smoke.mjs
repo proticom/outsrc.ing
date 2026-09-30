@@ -30,6 +30,7 @@ const completeSchema = z.object({
   status: z.literal("succeeded"), message: z.literal("native mailbox passed"),
   session_id: z.string().min(1), run_id: z.string(), exit_code: z.literal(0),
   findings: z.array(z.unknown()).length(0),
+  usage: z.object({ tokens_in: z.number().int().nonnegative(), tokens_out: z.number().int().nonnegative() }),
 });
 
 async function smoke(adapter) {
@@ -107,6 +108,7 @@ async function smoke(adapter) {
     assert.equal(done.session_id, waiting.session_id);
     assert.equal(done.run_id, second.run_id);
     report.phases[1].message = done.message;
+    report.phases[1].usage = done.usage;
     const history = z.object({ threads: z.array(z.object({ thread_id: z.string(), run_count: z.number() })) })
       .parse(await call("threads"));
     assert.equal(history.threads.find((thread) => thread.thread_id === threadId)?.run_count, 2);

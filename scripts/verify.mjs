@@ -6,7 +6,7 @@ for (const [args, extra] of [
   [['run', 'build'], {}],
   [['run', 'typecheck'], {}],
   [['test'], {}],
-  [['exec', '--', 'vitest', 'run', 'tests/workflow.test.ts'], { OUTSRC_TEST_SERVER: 'dist/server.js' }],
+  [['exec', '--', 'vitest', 'run', 'tests/workflow.test.ts', 'tests/usage-workflow.test.ts'], { OUTSRC_TEST_SERVER: 'dist/server.js' }],
 ]) {
   const result = spawnSync('npm', args, { cwd: root, env: { ...process.env, ...extra }, stdio: 'inherit' });
   if (result.error) throw result.error;
