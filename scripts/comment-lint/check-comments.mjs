@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
-import { extname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { appendFileSync, readFileSync, realpathSync } from "node:fs";
+import { extname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const slashExtensions = new Set("js mjs cjs jsx ts tsx mts cts swift rs go java kt kts c h cpp cs scss".split(" "));
 const hashExtensions = new Set("py rb sh bash zsh yml yaml toml".split(" "));
 const markupExtensions = new Set(["html", "vue", "svelte"]);
+const fillerWords = new Set("the a an this that to of for and our its it is then now new".split(" "));
 const issueLink = /https?:\/\/[^\s]*(?:\/issues\/|\/pull\/|\/discussions\/)|https?:\/\/(?:www\.)?rfc-editor\.org(?:\/|\b)|\bRFC\s+\d+\b/i;
 const messages = {
   "todo-without-link": "Link this task to an issue or RFC.",
@@ -69,6 +70,7 @@ function syntax(path) {
   if (slashExtensions.has(extension)) return "slash";
   if (hashExtensions.has(extension)) return "hash";
   if (markupExtensions.has(extension)) return "markup";
+  if (extension === "mdx") return "mdx";
   return extension === "css" ? "css" : undefined;
 }
 
@@ -82,6 +84,7 @@ function skipped(path, source) {
 export function extractComments(path, source) {
   const style = syntax(path);
   if (!style) return [];
+  const markup = style === "markup" || style === "mdx";
   const sourceLines = source.split(/\r?\n/);
   const code = sourceLines.map(() => "");
   const comments = [];
@@ -89,8 +92,17 @@ export function extractComments(path, source) {
   let quote = "";
   let escaped = false;
   let inTag = false;
+  let fenceLength = 0;
   for (let index = 0; index < sourceLines.length; index++) {
     const text = sourceLines[index];
+    if (style === "mdx" && !block && !quote) {
+      const fence = /^ {0,3}(`{3,})(.*)$/.exec(text);
+      if (fenceLength) {
+        if (fence && fence[1].length >= fenceLength && !fence[2].trim()) fenceLength = 0;
+        continue;
+      }
+      if (fence) { fenceLength = fence[1].length; continue; }
+    }
     let position = 0;
     if (block) block.lines.push({ line: index + 1, text: "" });
     while (position < text.length) {
@@ -110,10 +122,11 @@ export function extractComments(path, source) {
         const tail = text.slice(position);
         const slashComment = style === "slash" && tail.startsWith("//") && !/[\\:]/.test(text[position - 1] ?? "");
         const lineComment = slashComment || (style === "hash" && tail.startsWith("#"));
-        const close = style === "markup" && tail.startsWith("<!--") ? "-->"
+        const close = markup && tail.startsWith("<!--") ? "-->"
+          : style === "mdx" && tail.startsWith("{/*") ? "*/}"
           : (style === "slash" || style === "css") && tail.startsWith("/*") && text[position - 1] !== "\\" ? "*/" : "";
         if (lineComment || close) {
-          const width = lineComment ? (style === "hash" ? 1 : 2) : close === "-->" ? 4 : 2;
+          const width = lineComment ? (style === "hash" ? 1 : 2) : close === "-->" ? 4 : close === "*/}" ? 3 : 2;
           const comment = {
             kind: lineComment ? "line" : "block", startLine: index + 1, endLine: index + 1,
             lines: [{ line: index + 1, text: "" }], close,
@@ -123,13 +136,13 @@ export function extractComments(path, source) {
           position += width;
           if (lineComment) { comment.lines[0].text = text.slice(position); break; }
           block = comment;
-        } else if ((style !== "markup" || inTag) && /["'`]/.test(text[position])) {
+        } else if ((!markup || inTag) && /["'`]/.test(text[position])) {
           quote = style === "hash" && (tail.startsWith('"""') || tail.startsWith("'''")) ? tail.slice(0, 3) : text[position];
           code[index] += '""';
           position += quote.length;
         } else {
-          if (style === "markup" && text[position] === "<") inTag = true;
-          if (style === "markup" && text[position] === ">") inTag = false;
+          if (markup && text[position] === "<") inTag = true;
+          if (markup && text[position] === ">") inTag = false;
           code[index] += text[position++];
         }
       }
@@ -194,8 +207,8 @@ export function classifyComment(comment, line) {
   if (looksLikeCode(text)) rules.push("commented-out-code");
   if (/\b(?:temporary|temporarily|workaround|work around|for now|fine for now|too risky|quick fix|hack)\b/i.test(text)) rules.push("excuse-marker");
   if (/\bdo not (?:remove|change)\b|\btalk to .+? before\b/i.test(text)) rules.push("unowned-constraint");
-  if (comment.startLine === comment.endLine && comment.standalone) {
-    const words = text.toLowerCase().match(/[a-z]+/g) ?? [];
+  if (comment.startLine === comment.endLine && comment.standalone && !/\b(?:because|before|after|so)\b/i.test(text)) {
+    const words = (text.toLowerCase().match(/[a-z]+/g) ?? []).filter((word) => !fillerWords.has(word));
     const identifiers = comment.nextCode.replace(/([a-z\d])([A-Z])/g, "$1 $2").replace(/([A-Z])([A-Z][a-z])/g, "$1 $2").toLowerCase().match(/[a-z]+/g) ?? [];
     if (comment.nextCode.includes("++")) identifiers.push("increment");
     if (comment.nextCode.includes("--")) identifiers.push("decrement");
@@ -309,4 +322,12 @@ function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main();
+function isMain() {
+  try {
+    return Boolean(process.argv[1]) && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) main();
