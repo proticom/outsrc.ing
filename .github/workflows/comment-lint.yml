@@ -1,0 +1,55 @@
+name: Comment lint
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: warn
+      scope:
+        type: string
+        default: changed
+      checker-ref:
+        type: string
+        required: true
+        description: The outsrc.ing commit SHA pinned by the caller
+
+permissions:
+  contents: read
+
+jobs:
+  comment-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: proticom/outsrc.ing
+          ref: ${{ inputs.checker-ref }}
+          path: .comment-lint
+          persist-credentials: false
+      - name: Check comments
+        env:
+          MODE: ${{ inputs.mode }}
+          SCOPE: ${{ inputs.scope }}
+        run: |
+          case "$SCOPE" in
+            all)
+              node .comment-lint/scripts/comment-lint/check-comments.mjs --mode "$MODE" --all
+              ;;
+            changed)
+              if git rev-parse --verify HEAD^1 >/dev/null 2>&1; then
+                node .comment-lint/scripts/comment-lint/check-comments.mjs --mode "$MODE" --base HEAD^1 --head HEAD
+              else
+                node .comment-lint/scripts/comment-lint/check-comments.mjs --mode "$MODE" --all
+              fi
+              ;;
+            *)
+              echo "scope must be changed or all" >&2
+              exit 1
+              ;;
+          esac

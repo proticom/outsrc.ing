@@ -285,6 +285,25 @@ From a checkout: `npm install`, `npm run build`, then `npm link` to put the chec
 
 Two live checks use your own provider accounts and can cost money: `npm run smoke:native` runs a question and a follow-up through each CLI target, and `npm run smoke:plugins` does the same plus an adversarial review through each plugin engine.
 
+### Comment checks
+
+Other repositories can check added comment lines with this reusable workflow. Replace both `<sha>` values with the same full outsrc.ing commit SHA.
+
+```yaml
+name: Comment lint
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  comment-lint:
+    uses: proticom/outsrc.ing/.github/workflows/comment-lint.yml@<sha>
+    with:
+      mode: warn
+      checker-ref: <sha>
+```
+
+The default scope is `changed`. Use `scope: all` to check every tracked file, or `mode: error` to fail on findings. It runs on Node 20+ without installing dependencies. For a local check, run `node scripts/comment-lint/check-comments.mjs --all --format text`.
+
 ## License
 
 MIT. See `LICENSE`.
