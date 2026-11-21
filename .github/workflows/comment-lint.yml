@@ -1,0 +1,99 @@
+name: Comment lint
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: warn
+      scope:
+        type: string
+        default: changed
+      checker-ref:
+        type: string
+        required: false
+        description: The outsrc.ing commit SHA pinned by the caller
+      base-sha:
+        type: string
+        required: false
+      head-sha:
+        type: string
+        required: false
+      use-local-checker:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  comment-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate checker ref
+        if: ${{ !inputs.use-local-checker }}
+        env:
+          CHECKER_REF: ${{ inputs.checker-ref }}
+        run: |
+          if [[ -z "$CHECKER_REF" ]]; then
+            echo "::error::checker-ref is required unless use-local-checker is true"
+            exit 1
+          fi
+          if [[ ! "$CHECKER_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::checker-ref must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ !inputs.use-local-checker }}
+        with:
+          repository: proticom/outsrc.ing
+          ref: ${{ inputs.checker-ref }}
+          path: .comment-lint
+          persist-credentials: false
+      - name: Check comments
+        env:
+          MODE: ${{ inputs.mode }}
+          SCOPE: ${{ inputs.scope }}
+          BASE_SHA: ${{ inputs.base-sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha }}
+          USE_LOCAL_CHECKER: ${{ inputs.use-local-checker }}
+        run: |
+          CHECKER=scripts/comment-lint/check-comments.mjs
+          if [[ "$USE_LOCAL_CHECKER" != "true" ]]; then
+            CHECKER=".comment-lint/$CHECKER"
+          fi
+          case "$SCOPE" in
+            all)
+              node "$CHECKER" --mode "$MODE" --all
+              ;;
+            changed)
+              if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+                echo "::error::changed scope needs a pull_request event or explicit base-sha and head-sha"
+                exit 1
+              fi
+              if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ || ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::base-sha and head-sha must be full lowercase 40-character commit SHAs"
+                exit 1
+              fi
+              if ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+                if ! git fetch --no-tags origin "$HEAD_SHA"; then
+                  echo "::error::Failed to fetch head-sha from origin"
+                  exit 1
+                fi
+              fi
+              if ! MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA"); then
+                echo "::error::Failed to compute the merge base for base-sha and head-sha"
+                exit 1
+              fi
+              node "$CHECKER" --mode "$MODE" --base "$MERGE_BASE" --head "$HEAD_SHA"
+              ;;
+            *)
+              echo "::error::scope must be changed or all"
+              exit 1
+              ;;
+          esac
