@@ -304,6 +304,8 @@ jobs:
 
 The default scope is `changed`. Use `scope: all` to check every tracked file, or `mode: error` to fail on findings. It runs on Node 20+ without installing dependencies. For a local check, run `node scripts/comment-lint/check-comments.mjs --all --format text`.
 
+External callers must pass `checker-ref` as a full commit SHA. The optional `base-sha` and `head-sha` inputs override the pull request SHAs. Outside a `pull_request` event, changed scope requires both. Changed scope compares the head with the merge base of these SHAs.
+
 ## License
 
 MIT. See `LICENSE`.

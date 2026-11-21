@@ -12,4 +12,4 @@ jobs:
     with:
       mode: warn
       scope: changed
-      checker-ref: ${{ github.event.pull_request.head.sha }}
+      use-local-checker: true

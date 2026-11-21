@@ -280,9 +280,8 @@ function report(findings, { mode, format }) {
 }
 
 function main() {
-  let config;
   try {
-    config = options(process.argv.slice(2));
+    const config = options(process.argv.slice(2));
     let findings;
     if (config.all) {
       findings = git(["ls-files", "-z"]).split("\0").filter(Boolean).flatMap((path) => {
@@ -305,7 +304,8 @@ function main() {
     process.exitCode = config.mode === "error" && findings.length > 0 ? 1 : 0;
   } catch (error) {
     process.stderr.write(`comment-lint: ${error.message}\n`);
-    process.exitCode = (config?.mode ?? (process.argv.includes("error") ? "error" : "warn")) === "error" ? 1 : 0;
+    if (process.env.GITHUB_ACTIONS === "true") process.stdout.write(`::error title=comment-lint::comment-lint failed: ${escapeAnnotation(error.message)}\n`);
+    process.exitCode = 2;
   }
 }
 

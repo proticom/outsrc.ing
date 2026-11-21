@@ -231,6 +231,18 @@ test("parses hunks, deletions, context, quoted names, and new-file line numbers"
   ]);
 });
 
+test("rename-with-edit findings use the new path", () => {
+  const diff = 'diff --git a/old.ts b/new.ts\nsimilarity index 60%\nrename from old.ts\nrename to new.ts\n--- a/old.ts\n+++ b/new.ts\n@@ -1 +1,2 @@\n const value = 1;\n+// TODO investigate\n';
+  expect(lintDiff(diff).map(({ path, line, rule }) => ({ path, line, rule }))).toEqual([
+    { path: "new.ts", line: 2, rule: "todo-without-link" },
+  ]);
+});
+
+test("binary diffs without hunks have no findings", () => {
+  const diff = 'diff --git a/data.ts b/data.ts\nindex 1234567..abcdef0 100644\nBinary files a/data.ts and b/data.ts differ\n';
+  expect(lintDiff(diff)).toEqual([]);
+});
+
 test("ignores existing TODOs in context and deleted lines", () => {
   const diff = '--- a/a.ts\n+++ b/a.ts\n@@ -1,3 +1,3 @@\n // TODO existing\n-// FIXME removed\n+const value = 1;\n use(value);\n';
   expect(lintDiff(diff)).toEqual([]);
@@ -285,6 +297,74 @@ test.each(["warn", "error"])("CLI uses %s exit status", (mode) => {
   expect(result.stderr).toBe("");
 });
 
+test.each(["warn", "error"])("CLI exits 2 for invalid Git refs in %s mode", (mode) => {
+  const directory = mkdtempSync(join(tmpdir(), "comment-lint-invalid-refs-"));
+  temporaryDirectories.push(directory);
+  expect(spawnSync("git", ["init", "--quiet", directory]).status).toBe(0);
+  for (const actions of ["false", "true"]) {
+    const result = spawnSync(process.execPath, [checker, "--mode", mode, "--base", "missing-base", "--head", "missing-head"], {
+      cwd: directory, encoding: "utf8", env: { ...process.env, GITHUB_ACTIONS: actions, GITHUB_STEP_SUMMARY: "" },
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("comment-lint: Command failed: git diff");
+    expect(result.stderr).toContain("missing-base");
+    if (actions === "true") expect(result.stdout).toContain("::error title=comment-lint::comment-lint failed: ");
+    else expect(result.stdout).toBe("");
+  }
+});
+
+test.each([
+  { option: "--mode", message: "--mode must be warn or error" },
+  { option: "--format", message: "--format must be github, text, or json" },
+  { option: "--unknown", message: "Unknown option or missing value: --unknown" },
+])("CLI exits 2 for invalid $option", ({ option, message }) => {
+  const result = runChecker("run();", [option, "invalid"], { GITHUB_ACTIONS: "true" });
+  expect(result.status).toBe(2);
+  expect(result.stderr).toBe(`comment-lint: ${message}\n`);
+  expect(result.stdout).toBe(`::error title=comment-lint::comment-lint failed: ${message}\n`);
+});
+
+test("CLI exits 2 for an unreadable diff in warn mode", () => {
+  const result = runChecker("run();", ["--mode", "warn", "--diff-file", "missing.diff"]);
+  expect(result.status).toBe(2);
+  expect(result.stderr).toContain("comment-lint: ENOENT:");
+  expect(result.stdout).toBe("");
+});
+
+test("real Git merge-base range excludes base-only changes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "comment-lint-range-"));
+  temporaryDirectories.push(directory);
+  function git(...args: string[]) {
+    const result = spawnSync("git", ["-c", "user.name=Comment Lint Test", "-c", "user.email=comment-lint@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], {
+      cwd: directory, encoding: "utf8",
+    });
+    if (result.status !== 0) throw new Error(result.stderr);
+    return result.stdout.trim();
+  }
+  git("init", "--quiet", "--initial-branch=base");
+  writeFileSync(join(directory, "shared.ts"), "// TODO existing\nconst value = 1;\n");
+  git("add", "--", "shared.ts");
+  git("commit", "--quiet", "-m", "Initial fixture");
+  git("checkout", "--quiet", "-b", "feature");
+  writeFileSync(join(directory, "shared.ts"), "// TODO existing\nconst value = 1;\n// TODO branch addition\n");
+  git("add", "--", "shared.ts");
+  git("commit", "--quiet", "-m", "Branch fixture");
+  git("checkout", "--quiet", "base");
+  writeFileSync(join(directory, "shared.ts"), "const value = 1;\n");
+  writeFileSync(join(directory, "base-only.ts"), "// FIXME base only\n");
+  git("add", "--", "shared.ts", "base-only.ts");
+  git("commit", "--quiet", "-m", "Advance base fixture");
+  const mergeBase = git("merge-base", "base", "feature");
+  const result = spawnSync(process.execPath, [checker, "--base", mergeBase, "--head", "feature", "--mode", "error", "--format", "json"], {
+    cwd: directory, encoding: "utf8", env: { ...process.env, GITHUB_ACTIONS: "false", GITHUB_STEP_SUMMARY: "" },
+  });
+  expect(result.status).toBe(1);
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout)).toEqual([
+    { path: "shared.ts", line: 3, rule: "todo-without-link", message: "Link this task to an issue or RFC." },
+  ]);
+});
+
 test("CLI defaults to warn and text outside Actions", () => {
   const result = runChecker("// TODO investigate");
   expect(result.status).toBe(0);
@@ -303,8 +383,8 @@ test("saved diff additions take precedence over local files", () => {
   expect(result.stdout).toBe("lint-fixture.ts:1: todo-without-link: Link this task to an issue or RFC.\ncomment-lint: 1 finding(s)\n");
 });
 
-test("clean CLI input succeeds in error mode", () => {
-  const result = runChecker("run();", ["--mode", "error", "--format", "json"]);
+test.each(["warn", "error"])("clean CLI input succeeds in %s mode", (mode) => {
+  const result = runChecker("run();", ["--mode", mode, "--format", "json"]);
   expect(result.status).toBe(0);
   expect(result.stdout).toBe("[]\n");
 });
