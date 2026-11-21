@@ -34,7 +34,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          filter: blob:none
           persist-credentials: false
       - name: Validate checker ref
         if: ${{ !inputs.use-local-checker }}
@@ -82,7 +81,7 @@ jobs:
                 exit 1
               fi
               if ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
-                if ! git fetch --no-tags --filter=blob:none origin "$HEAD_SHA"; then
+                if ! git fetch --no-tags origin "$HEAD_SHA"; then
                   echo "::error::Failed to fetch head-sha from origin"
                   exit 1
                 fi

@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, expect, test } from "vitest";
 import { classifyComment, extractComments, lintDiff, parseUnifiedDiff } from "../scripts/comment-lint/check-comments.mjs";
 
@@ -363,6 +363,75 @@ test("real Git merge-base range excludes base-only changes", () => {
   expect(JSON.parse(result.stdout)).toEqual([
     { path: "shared.ts", line: 3, rule: "todo-without-link", message: "Link this task to an issue or RFC." },
   ]);
+});
+
+function fixtureGit(directory: string, ...args: string[]) {
+  const result = spawnSync("git", ["-c", "user.name=Comment Lint Test", "-c", "user.email=comment-lint@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], {
+    cwd: directory, encoding: "utf8",
+  });
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout.trim();
+}
+
+function cloneFixture(blobless: boolean) {
+  const directory = mkdtempSync(join(tmpdir(), "comment-lint-clone-"));
+  temporaryDirectories.push(directory);
+  const origin = join(directory, "origin");
+  const clone = join(directory, "clone");
+  fixtureGit(directory, "init", "--quiet", "--initial-branch=base", origin);
+  fixtureGit(origin, "config", "uploadpack.allowFilter", "true");
+  writeFileSync(join(origin, "existing.ts"), "const value = 1;\n");
+  fixtureGit(origin, "add", "--", "existing.ts");
+  fixtureGit(origin, "commit", "--quiet", "-m", "Initial fixture");
+  const base = fixtureGit(origin, "rev-parse", "HEAD");
+  const baseBlob = fixtureGit(origin, "rev-parse", `${base}:existing.ts`);
+  fixtureGit(origin, "checkout", "--quiet", "-b", "feature");
+  writeFileSync(join(origin, "existing.ts"), "const value = 2;\n// TODO investigate\n");
+  fixtureGit(origin, "add", "--", "existing.ts");
+  fixtureGit(origin, "commit", "--quiet", "-m", "Edit fixture");
+  const head = fixtureGit(origin, "rev-parse", "HEAD");
+  const cloned = spawnSync("git", ["clone", "--quiet", "--branch", "feature", ...(blobless ? ["--filter=blob:none", "--no-checkout"] : []), pathToFileURL(origin).href, clone], {
+    cwd: directory, encoding: "utf8",
+  });
+  return { clone, base, head, baseBlob, cloned };
+}
+
+function lintCloneWithoutRemote({ clone, base, head }: ReturnType<typeof cloneFixture>) {
+  fixtureGit(clone, "remote", "set-url", "origin", pathToFileURL(join(clone, "missing-origin")).href);
+  const mergeBase = fixtureGit(clone, "merge-base", base, head);
+  return spawnSync(process.execPath, [checker, "--mode", "warn", "--format", "text", "--base", mergeBase, "--head", head], {
+    cwd: clone, encoding: "utf8", env: { ...process.env, GITHUB_ACTIONS: "false", GITHUB_STEP_SUMMARY: "" },
+  });
+}
+
+test("edits to an existing file lint without reaching the remote", () => {
+  const fixture = cloneFixture(false);
+  expect(fixture.cloned.status).toBe(0);
+  const result = lintCloneWithoutRemote(fixture);
+  expect(result.status).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toBe("existing.ts:2: todo-without-link: Link this task to an issue or RFC.\ncomment-lint: 1 finding(s)\n");
+});
+
+test("blobless clones with a broken promisor remote fail loudly", (context) => {
+  const fixture = cloneFixture(true);
+  if (fixture.cloned.status !== 0 && /filter.*(?:not supported|not recognized|unsupported)|(?:not support|unsupported|unknown|unrecognized).*filter/i.test(fixture.cloned.stderr)) {
+    context.skip(`Local Git refused partial clone: ${fixture.cloned.stderr.trim()}`);
+  }
+  expect(fixture.cloned.status).toBe(0);
+  const missing = fixtureGit(fixture.clone, "rev-list", "--objects", "--all", "--missing=print").split("\n");
+  if (!missing.includes(`?${fixture.baseBlob}`)) context.skip("Local Git retained the base blob despite blob:none; missing-blob failure cannot be exercised");
+  const result = lintCloneWithoutRemote(fixture);
+  expect(result.status).toBe(2);
+  expect(result.stderr).toContain("comment-lint:");
+  expect(result.stderr).toContain("from promisor remote");
+  expect(result.stdout).toBe("");
+});
+
+test("workflow does not use blob filters", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/comment-lint.yml", import.meta.url), "utf8");
+  const filters = workflow.split("\n").filter((line) => /\bfilter['"]?\s*:\s*['"]?blob:none\b/.test(line) || /\bgit\s+fetch\b.*--filter=blob:none\b/.test(line));
+  expect(filters).toEqual([]);
 });
 
 test("CLI defaults to warn and text outside Actions", () => {
