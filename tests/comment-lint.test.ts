@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -85,6 +85,25 @@ test.each([
 });
 
 test.each([
+  "// increment the counter\ncounter++;",
+  "// decrement the counter\ncounter--;",
+  "// get the user\ngetUser();",
+  "// now get the user for this and that\ngetUser();",
+  "// get the user for our account and its current status\ngetUserForOurAccountAndItsCurrentStatus();",
+])("ignores filler in short restatements in %s", (source) => {
+  expect(rules(source)).toEqual(["restates-code"]);
+});
+
+test.each([
+  "// the API returns cents, so divide\nconst cents = api.returnsCentsSoDivide();",
+  "// get the missing user\ngetUser();",
+  "// the a an this that to of for and our its it is then now new\ngetUser();",
+  "// get the current user account profile status\ngetTheCurrentUserAccountProfileStatus();",
+])("keeps explanations and unmatched or empty meaningful words in %s", (source) => {
+  expect(rules(source)).toEqual([]);
+});
+
+test.each([
   "// get missing user\ngetUser();",
   "// get the user before rendering this view\ngetTheUserBeforeRenderingThisView();",
   "getUser(); // get user\ngetUser();",
@@ -160,6 +179,30 @@ test.each("py rb sh bash zsh yml yaml toml".split(" "))("extracts hash comments 
 
 test.each(["html", "vue", "svelte"])("extracts template comments in .%s", (extension) => {
   expect(rules('<p>TODO text</p>\n<!-- TODO investigate -->', `lint-fixture.${extension}`)).toEqual(["todo-without-link"]);
+});
+
+test.each(["{/* TODO investigate */}", "<!-- TODO investigate -->"])("extracts MDX comments in %s", (source) => {
+  expect(rules(source, "lint-fixture.mdx")).toEqual(["todo-without-link"]);
+});
+
+test.each(["```", "````"])("ignores MDX comments inside a %s fence", (fence) => {
+  expect(rules(`${fence}mdx\n{/* TODO investigate */}\n<!-- FIXME investigate -->\n${fence}`, "lint-fixture.mdx")).toEqual([]);
+});
+
+test("resumes MDX comment extraction after a fenced block", () => {
+  const source = "```mdx\n{/* TODO fenced */}\n<!-- FIXME fenced -->\n```\n{/* TODO investigate */}";
+  expect(lintDiff(addedDiff(source, "lint-fixture.mdx")).map(({ line, rule }) => ({ line, rule }))).toEqual([
+    { line: 5, rule: "todo-without-link" },
+  ]);
+});
+
+test("retains MDX fence state from the complete target source", () => {
+  const diff = '--- a/a.mdx\n+++ b/a.mdx\n@@ -2,0 +3,1 @@\n+{/* TODO investigate */}\n';
+  expect(lintDiff(diff, { "a.mdx": "```mdx\nexample\n{/* TODO investigate */}\n```" })).toEqual([]);
+});
+
+test("keeps plain Markdown skipped", () => {
+  expect(rules("{/* TODO investigate */}\n<!-- TODO investigate -->", "README.md")).toEqual([]);
 });
 
 test("ignores comment markers in HTML attributes without hiding comments after prose", () => {
@@ -287,6 +330,42 @@ function runChecker(source: string, args: string[] = [], env: NodeJS.ProcessEnv 
     cwd: directory, encoding: "utf8", env: { ...process.env, GITHUB_ACTIONS: "false", GITHUB_STEP_SUMMARY: "", ...env },
   });
 }
+
+test("CLI runs through a symlinked temporary directory", () => {
+  const directory = mkdtempSync(join(tmpdir(), "comment-lint-symlink-"));
+  temporaryDirectories.push(directory);
+  const real = join(directory, "real");
+  const alias = join(directory, "alias");
+  mkdirSync(real);
+  symlinkSync(real, alias, "dir");
+  copyFileSync(checker, join(real, "check-comments.mjs"));
+  writeFileSync(join(real, "clean.diff"), addedDiff("run();"));
+  const env = { ...process.env, GITHUB_ACTIONS: "false", GITHUB_STEP_SUMMARY: "" };
+  const invalid = spawnSync(process.execPath, [join(alias, "check-comments.mjs"), "--mode", "banana"], {
+    cwd: directory, encoding: "utf8", env,
+  });
+  expect(invalid.status).toBe(2);
+  expect(invalid.stderr).toBe("comment-lint: --mode must be warn or error\n");
+  expect(invalid.stdout).toBe("");
+  const clean = spawnSync(process.execPath, [join(alias, "check-comments.mjs"), "--diff-file", join(alias, "clean.diff"), "--mode", "error", "--format", "text"], {
+    cwd: directory, encoding: "utf8", env,
+  });
+  expect(clean.status).toBe(0);
+  expect(clean.stderr).toBe("");
+  expect(clean.stdout).toBe("comment-lint: 0 finding(s)\n");
+});
+
+test.each([
+  { kind: "absent", setup: "delete process.argv[1]" },
+  { kind: "unresolvable", setup: 'process.argv[1] = "missing/check-comments.mjs"' },
+])("module import tolerates an $kind entry path", ({ setup }) => {
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `${setup}; await import(${JSON.stringify(pathToFileURL(checker).href)}); process.stdout.write("imported\\n");`], {
+    encoding: "utf8",
+  });
+  expect(result.status).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toBe("imported\n");
+});
 
 test.each(["warn", "error"])("CLI uses %s exit status", (mode) => {
   const result = runChecker("// TODO investigate", ["--mode", mode, "--format", "json"]);
