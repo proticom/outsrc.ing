@@ -1,8 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { addWorktree, hideAgentConfig, WorktreeMethodSchema, type WorktreeCommand } from "../src/git.ts";
+import { z } from "zod";
+import { addWorktree, hideAgentConfig, parseGitCowTimeout, WorktreeMethodSchema, type WorktreeCommand } from "../src/git.ts";
 import { createMailbox, requestFileName } from "../src/mailbox.ts";
 import { migrateLegacy } from "../src/migrate.ts";
 import { readJson, ResultSchema, RunSchema, ThreadSchema, writeJson } from "../src/state.ts";
@@ -19,6 +20,8 @@ const originalPath = process.env.PATH ?? "";
 const originalExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim();
 const realCow = executable("git-cow", [originalExecPath, ...originalPath.split(delimiter)]);
 const realGit = executable("git");
+const sessionTool = executable("perl") ?? executable("python3");
+const sleep = executable("sleep");
 const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -82,6 +85,172 @@ function expectWorktree(f: ReturnType<typeof fixture>) {
 }
 
 describe("worktree commands", () => {
+  test.skipIf(process.platform === "win32").each(["SIGTERM", "SIGINT", "SIGHUP", "exit", "listener", "handled", "late", "late-prepended", "removed", "denied-exit", "concurrent"])("sender shutdown %s removes only its attempts and preserves exit semantics", async (mode) => {
+    const f = fixture("timeout");
+    mkdirSync(dirname(f.helper), { recursive: true });
+    git(f.repo, "worktree", "add", "--detach", f.helper);
+    writeFileSync(join(dirname(f.helper), ".repo.lock"), "locked\n");
+    writeFileSync(join(dirname(f.helper), ".repo.warmed"), "warmed\n");
+    const attempts = Array.from({ length: mode === "concurrent" ? 2 : 1 }, (_, index) => ({
+      repo: f.repo, worktree: `${f.worktree}-${index}`, branch: `agent/outsrc-0123456789abcde${index}`, command: "git-cow",
+    }));
+    const outcomes = join(f.home, "outcomes");
+    const handled = join(f.home, "handled");
+    const script = `
+      import { appendFileSync } from 'node:fs';
+      import { addWorktree } from ${JSON.stringify(new URL("../src/git.ts", import.meta.url).href)};
+      const [attempts, mode, outcomes, handled] = JSON.parse(process.argv[1]);
+      const listener = () => {
+        appendFileSync(handled, 'handled once\\n');
+        if (mode === 'listener') process.exit(37);
+      };
+      if (mode === 'listener' || mode === 'handled' || mode === 'removed') process.once('SIGTERM', listener);
+      if (mode === 'exit') process.stdin.once('data', () => process.exit(37));
+      const pending = Promise.all(attempts.map(async (attempt) => {
+        if (mode === 'denied-exit') attempt.internal = { killGroup: () => { throw Object.assign(new Error('group signal denied'), { code: 'EPERM' }); } };
+        try { appendFileSync(outcomes, await addWorktree(attempt)); }
+        catch (error) {
+          appendFileSync(outcomes, error.message + '\\n');
+          if (mode === 'denied-exit') process.exit(37);
+        }
+      }));
+      if (mode === 'late') process.once('SIGTERM', listener);
+      if (mode === 'late-prepended') process.prependOnceListener('SIGTERM', listener);
+      if (mode === 'removed') process.off('SIGTERM', listener);
+      await pending;
+    `;
+    const sender = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script, JSON.stringify([attempts, mode, outcomes, handled])], {
+      env: { ...process.env, OUTSRC_GIT_COW_TIMEOUT_MS: mode === "denied-exit" ? "1000" : "600000" }, stdio: ["pipe", "ignore", "pipe"],
+    });
+    let stderr = "";
+    sender.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      sender.once("error", reject);
+      sender.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    const groups = () => existsSync(join(f.bin, "groups.jsonl")) ? readFileSync(join(f.bin, "groups.jsonl"), "utf8").trim().split("\n")
+      .map((line) => z.object({ stub: z.number().int().positive(), child: z.number().int().positive() }).parse(JSON.parse(line))) : [];
+    try {
+      await expect.poll(() => groups().length).toBe(attempts.length);
+      for (const attempt of attempts) expect(git(attempt.worktree, "branch", "--show-current")).toBe(`${attempt.branch}\n`);
+      const signal = mode === "SIGINT" ? "SIGINT" : mode === "SIGHUP" ? "SIGHUP" : "SIGTERM";
+      if (mode === "exit") sender.stdin.write("exit\n"); else if (mode !== "denied-exit") sender.kill(signal);
+      await expect.poll(() => sender.exitCode !== null || sender.signalCode !== null, { timeout: 5000 }).toBe(true);
+      expect(await exited).toEqual(mode === "listener" || mode === "exit" || mode === "denied-exit" ? { code: 37, signal: null }
+        : mode === "handled" || mode === "late" || mode === "late-prepended" ? { code: 0, signal: null } : { code: null, signal });
+      expect(stderr).toBe("");
+      if (mode === "listener" || mode === "handled" || mode === "late" || mode === "late-prepended") expect(readFileSync(handled, "utf8")).toBe("handled once\n");
+      if (mode === "handled" || mode === "late" || mode === "late-prepended") expect(readFileSync(outcomes, "utf8")).toBe("git-cow interrupted by SIGTERM\n");
+      if (mode === "denied-exit") expect(readFileSync(outcomes, "utf8")).toBe("group signal denied\n");
+      for (const { stub, child } of groups()) {
+        for (const pid of [stub, child]) await expect.poll(() => {
+          try { process.kill(pid, 0); return "alive"; }
+          catch (error) { return error instanceof Error && "code" in error ? error.code : "unknown"; }
+        }, { timeout: 2000, interval: 20 }).toBe("ESRCH");
+      }
+      for (const attempt of attempts) {
+        expect(existsSync(attempt.worktree)).toBe(false);
+        expect(git(f.repo, "branch", "--list", attempt.branch)).toBe("");
+      }
+      const registrations = git(f.repo, "worktree", "list", "--porcelain", "-z").split("\0").filter((entry) => entry.startsWith("worktree "));
+      expect(registrations.sort()).toEqual([`worktree ${f.repo}`, `worktree ${f.helper}`].sort());
+      expectHelper(f);
+    } finally {
+      sender.kill("SIGKILL");
+      await exited;
+      for (const { stub, child } of groups()) for (const pid of [stub, child]) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    }
+  });
+
+  test.skipIf(process.platform === "win32").each(["success", "partial"])("%s creation restores the original signal and exit listeners", async (mode) => {
+    const f = fixture(mode);
+    const signals = ["SIGINT", "SIGTERM", "SIGHUP", "exit", "newListener"];
+    const listeners = signals.map((signal) => process.rawListeners(signal));
+    expect(await addWorktree({ ...f, command: "git-cow" })).toBe(mode === "success" ? "git-cow" : "git (fallback: git-cow exited 7)");
+    expect(signals.map((signal) => process.rawListeners(signal))).toEqual(listeners);
+    expectWorktree(f);
+  });
+
+  test.each([undefined, "", " ", "\t", "0", "-1", "1.5", "0x10", "1e3", "2147483648", "99999999999999999999999", "1\n", "+1"])("invalid timeout override %j uses the default", (value) => {
+    expect(parseGitCowTimeout(value)).toBe(600_000);
+  });
+
+  test.each([["1", 1], ["0010", 10], ["1000", 1000], ["2147483647", 2147483647]])("decimal timeout override %s is accepted", (value, timeout) => {
+    expect(parseGitCowTimeout(String(value))).toBe(timeout);
+  });
+
+  test("an invalid timeout override does not fail worktree creation", async () => {
+    const f = fixture();
+    vi.stubEnv("OUTSRC_GIT_COW_TIMEOUT_MS", "1.5");
+    expect(await addWorktree({ ...f, command: "git-cow" })).toBe("git-cow");
+    expectWorktree(f);
+    expectHelper(f);
+  });
+
+  test.skipIf(process.platform === "win32")("a group gone after SIGTERM still falls back on timeout", async () => {
+    const f = fixture("timeout-term");
+    vi.stubEnv("OUTSRC_GIT_COW_TIMEOUT_MS", "1000");
+    try {
+      expect(await addWorktree({ ...f, command: "git-cow" })).toBe("git (fallback: git-cow timed out)");
+      expect(readFileSync(join(f.bin, "terminated"), "utf8")).toBe("SIGTERM\n");
+      expectWorktree(f);
+      expectHelper(f);
+    } finally {
+      if (existsSync(join(f.bin, "stub.pid"))) { try { process.kill(Number(readFileSync(join(f.bin, "stub.pid"), "utf8")), "SIGKILL"); } catch {} }
+    }
+  });
+
+  test.skipIf(process.platform === "win32")("EPERM rejects without cleanup or plain-git fallback", async () => {
+    const f = fixture("signal-error");
+    vi.stubEnv("OUTSRC_GIT_COW_TIMEOUT_MS", "1000");
+    const denied = Object.assign(new Error("group signal denied"), { code: "EPERM" });
+    let group: number | undefined;
+    const signals = ["SIGINT", "SIGTERM", "SIGHUP", "exit", "newListener"];
+    const listeners = signals.map((signal) => process.rawListeners(signal));
+    const attempt = addWorktree({ ...f, command: "git-cow", internal: { killGroup: (pid) => { group = pid; throw denied; } } });
+    const rejected = expect(attempt).rejects.toBe(denied);
+    try {
+      await expect.poll(() => existsSync(join(f.bin, "ready"))).toBe(true);
+      const admin = git(f.worktree, "rev-parse", "--absolute-git-dir").trim();
+      const gitdir = readFileSync(join(admin, "gitdir"), "utf8");
+      await rejected;
+      expect(readFileSync(join(f.worktree, "partial"), "utf8")).toBe("unfinished clone\n");
+      expect(readFileSync(join(admin, "gitdir"), "utf8")).toBe(gitdir);
+      expectWorktree(f);
+      expectHelper(f);
+    } finally {
+      if (group !== undefined) { try { process.kill(-group, "SIGKILL"); } catch {} }
+      await attempt.catch(() => {});
+      await expect.poll(() => signals.map((signal) => process.rawListeners(signal))).toEqual(listeners);
+    }
+  });
+
+  test.skipIf(process.platform === "win32" || !sessionTool || !sleep).each(["escapeok", "escape"])("%s settles without waiting for escaped inherited pipes", async (mode) => {
+    const f = fixture(mode);
+    if (!sessionTool || !sleep) throw new Error("session tool and sleep are required");
+    const pidFile = join(f.bin, "escaped.pid");
+    const args = basename(sessionTool) === "perl"
+      ? ["-MPOSIX", "-e", 'POSIX::setsid() >= 0 or die $!; open(my $fh, ">", shift @ARGV) or die $!; print $fh $$; close $fh; exec @ARGV;', pidFile, sleep, "25"]
+      : ["-c", 'import os,sys; os.setsid(); open(sys.argv[1],"w").write(str(os.getpid())); os.execv(sys.argv[2],sys.argv[2:])', pidFile, sleep, "25"];
+    writeFileSync(join(f.bin, "session.json"), JSON.stringify({ command: sessionTool, args }));
+    vi.stubEnv("OUTSRC_GIT_COW_TIMEOUT_MS", "1000");
+    const started = Date.now();
+    const attempt = addWorktree({ ...f, command: "git-cow" });
+    try {
+      const deadline = new Promise((_, reject) => {
+        const timer = setTimeout(() => reject(new Error("escaped pipes blocked settlement for 5 seconds")), 5000);
+        void attempt.finally(() => clearTimeout(timer)).catch(() => {});
+      });
+      expect(await Promise.race([attempt, deadline])).toBe(mode === "escapeok" ? "git-cow" : "git (fallback: git-cow timed out)");
+      expect(Date.now() - started).toBeLessThan(5000);
+      expectWorktree(f);
+      expectHelper(f);
+    } finally {
+      if (existsSync(pidFile)) { try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {} }
+      await attempt;
+    }
+  });
+
   test("default uses plain git even when git-cow is available", async () => {
     const f = fixture();
     expect(await addWorktree(f)).toBe("git");
@@ -213,7 +382,7 @@ describe("worktree commands", () => {
     expect(git(f.worktree, "branch", "--show-current")).toBe("agent/job\n");
   });
 
-  test.skipIf(process.platform === "win32").each(["timeout", "timeout-orphan"])("%s kills the stub and its TERM-resistant child before fallback", async (mode) => {
+  test.skipIf(process.platform === "win32").each(["timeout", "timeout-orphan", "failed-child"])("%s kills the stub and its TERM-resistant child before fallback", async (mode) => {
     const f = fixture(mode);
     vi.stubEnv("OUTSRC_GIT_COW_TIMEOUT_MS", "1000");
     const attempt = addWorktree({ ...f, command: "git-cow" });
@@ -221,14 +390,14 @@ describe("worktree commands", () => {
     try {
       await expect.poll(() => existsSync(join(f.bin, "stub.pid"))).toBe(true);
       for (const name of ["stub", "child"]) pids.push(Number(readFileSync(join(f.bin, `${name}.pid`), "utf8")));
-      expect(await attempt).toBe("git (fallback: git-cow timed out)");
+      expect(await attempt).toBe(mode === "failed-child" ? "git (fallback: git-cow exited 7)" : "git (fallback: git-cow timed out)");
       for (const pid of pids) {
         await expect.poll(() => {
           try { process.kill(pid, 0); return "alive"; }
           catch (error) { return error instanceof Error && "code" in error ? error.code : "unknown"; }
         }, { timeout: 500, interval: 20 }).toBe("ESRCH");
       }
-      expect(readFileSync(join(f.bin, "terminated"), "utf8")).toBe("SIGTERM\n");
+      if (mode !== "failed-child") expect(readFileSync(join(f.bin, "terminated"), "utf8")).toBe("SIGTERM\n");
       expectWorktree(f);
       expectHelper(f);
       expect(f.calls()).toEqual([["add", "-b", f.branch, f.worktree, "HEAD"]]);
