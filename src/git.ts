@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, lstatSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { filesystemPath } from "./paths.js";
@@ -8,6 +8,37 @@ export const WorktreeCommandSchema = z.enum(["git", "git-cow"]);
 export const WorktreeMethodSchema = z.union([WorktreeCommandSchema, z.templateLiteral(["git (fallback: ", z.string(), ")"])]);
 export type WorktreeCommand = z.infer<typeof WorktreeCommandSchema>;
 export type WorktreeMethod = z.infer<typeof WorktreeMethodSchema>;
+
+function commandDiagnostic(output: unknown): string {
+  const text = Buffer.isBuffer(output) ? output.toString("utf8") : typeof output === "string" ? output : "";
+  return text.trim().replace(/\s+/g, " ").slice(0, 200).trimEnd();
+}
+
+function gitCowFailureReason(error: unknown): string {
+  if (error === null || typeof error !== "object") return "git-cow failed";
+  if ("code" in error && error.code === "ETIMEDOUT") return "git-cow timed out";
+  const status = "status" in error && typeof error.status === "number" ? `git-cow exited ${error.status}` : "git-cow failed";
+  const diagnostic = ("stderr" in error ? commandDiagnostic(error.stderr) : "")
+    || ("stdout" in error ? commandDiagnostic(error.stdout) : "");
+  return diagnostic ? `${status}: ${diagnostic}` : status;
+}
+
+function removeWorktreeRegistration(opts: { repo: string; worktree: string }): void {
+  const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd: opts.repo, encoding: "utf8" }).trim();
+  const registrations = resolve(opts.repo, commonDir, "worktrees");
+  const target = filesystemPath(join(opts.worktree, ".git"));
+  for (const entry of readdirSync(registrations, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const admin = join(registrations, entry.name);
+    let gitdir: string;
+    try { gitdir = readFileSync(join(admin, "gitdir"), "utf8").trim(); }
+    catch { continue; }
+    if (gitdir && filesystemPath(resolve(admin, gitdir)) === target) {
+      rmSync(admin, { recursive: true, force: true });
+      return;
+    }
+  }
+}
 
 export function addWorktree(opts: {
   repo: string;
@@ -19,12 +50,13 @@ export function addWorktree(opts: {
   mkdirSync(dirname(opts.worktree), { recursive: true });
   let method: WorktreeMethod = "git";
   if (opts.command === "git-cow") {
-    const available = (process.env.PATH ?? "").split(delimiter).some((directory) => {
+    const execPath = execFileSync("git", ["--exec-path"], { cwd: opts.repo, encoding: "utf8" }).trim();
+    const available = [execPath, ...(process.env.PATH ?? "").split(delimiter)].some((directory) => {
       const executable = resolve(opts.repo, directory, "git-cow");
       try { accessSync(executable, constants.X_OK); return statSync(executable).isFile(); }
       catch { return false; }
     });
-    if (!available) method = "git (fallback: git-cow not found on PATH)";
+    if (!available) method = "git (fallback: git-cow not found in git exec-path or PATH)";
     else {
       const registered = () => execFileSync("git", ["worktree", "list", "--porcelain", "-z"], { cwd: opts.repo, encoding: "utf8" })
         .split("\0").includes(`worktree ${filesystemPath(opts.worktree)}`);
@@ -35,22 +67,19 @@ export function addWorktree(opts: {
       const existingWorktree = registered();
       const existingBranch = branchExists();
       try {
-        execFileSync("git", ["cow", "add", "-b", opts.branch, opts.worktree, opts.ref ?? "HEAD"], { cwd: opts.repo, stdio: "pipe" });
+        execFileSync("git", ["cow", "add", "-b", opts.branch, opts.worktree, opts.ref ?? "HEAD"], { cwd: opts.repo, stdio: "pipe", timeout: 600_000 });
         return "git-cow";
       } catch (error) {
         if (!existingWorktree && !existingFiles) {
           if (registered()) {
             try { execFileSync("git", ["worktree", "remove", "--force", opts.worktree], { cwd: opts.repo, stdio: "pipe" }); }
-            catch { rmSync(opts.worktree, { recursive: true, force: true }); }
-            execFileSync("git", ["worktree", "prune"], { cwd: opts.repo, stdio: "pipe" });
+            catch { removeWorktreeRegistration(opts); }
           }
           rmSync(opts.worktree, { recursive: true, force: true });
           if (destination) mkdirSync(opts.worktree);
         }
         if (!existingBranch && branchExists()) execFileSync("git", ["branch", "-D", opts.branch], { cwd: opts.repo, stdio: "pipe" });
-        const reason = error !== null && typeof error === "object" && "status" in error && typeof error.status === "number"
-          ? `git-cow exited ${error.status}` : "git-cow failed";
-        method = `git (fallback: ${reason})`;
+        method = `git (fallback: ${gitCowFailureReason(error)})`;
       }
     }
   }

@@ -1,22 +1,24 @@
-import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import childProcess, { execFileSync } from "node:child_process";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { basename, delimiter, dirname, join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { addWorktree, hideAgentConfig, type WorktreeCommand } from "../src/git.ts";
+import { addWorktree, hideAgentConfig, WorktreeMethodSchema, type WorktreeCommand } from "../src/git.ts";
 import { createMailbox } from "../src/mailbox.ts";
 import { migrateLegacy } from "../src/migrate.ts";
 import { readJson, ResultSchema, ThreadSchema, writeJson } from "../src/state.ts";
 import { initGitRepo, tempHome, testCtx } from "./helpers.ts";
 
-function executable(name: string): string | undefined {
-  return (process.env.PATH ?? "").split(delimiter).map((directory) => join(directory, name)).find((path) => {
+function executable(name: string, directories = (process.env.PATH ?? "").split(delimiter)): string | undefined {
+  return directories.map((directory) => join(directory, name)).find((path) => {
     try { accessSync(path, constants.X_OK); return statSync(path).isFile(); }
     catch { return false; }
   });
 }
 
 const originalPath = process.env.PATH ?? "";
-const realCow = executable("git-cow");
+const originalExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim();
+const realCow = executable("git-cow", [originalExecPath, ...originalPath.split(delimiter)]);
 const realGit = executable("git");
 const roots: string[] = [];
 afterEach(() => {
@@ -43,6 +45,12 @@ function fixture(mode = "success") {
   const branch = "agent/job";
   const bin = join(home, "bin");
   mkdirSync(bin);
+  const execPath = join(home, "git-exec");
+  mkdirSync(execPath);
+  for (const name of readdirSync(originalExecPath)) {
+    if (name !== "git-cow") symlinkSync(join(originalExecPath, name), join(execPath, name));
+  }
+  vi.stubEnv("GIT_EXEC_PATH", execPath);
   if (!realGit) throw new Error("git is required");
   symlinkSync(realGit, join(bin, "git"));
   const ps = executable("ps");
@@ -57,7 +65,7 @@ function fixture(mode = "success") {
   const helper = join(dirname(worktree), ".git-cow", basename(repo));
   const calls = () => existsSync(join(bin, "calls.jsonl"))
     ? readFileSync(join(bin, "calls.jsonl"), "utf8").trim().split("\n").map((line): unknown => JSON.parse(line)) : [];
-  return { home, repo, worktree, branch, helper, bin, calls };
+  return { home, repo, worktree, branch, helper, bin, execPath, calls };
 }
 
 function expectHelper(f: ReturnType<typeof fixture>) {
@@ -101,9 +109,19 @@ describe("worktree commands", () => {
 
   test.each(["missing", "not-executable"])("%s git-cow falls back to plain git", (mode) => {
     const f = fixture(mode);
-    expect(addWorktree({ ...f, command: "git-cow" })).toBe("git (fallback: git-cow not found on PATH)");
+    expect(addWorktree({ ...f, command: "git-cow" })).toBe("git (fallback: git-cow not found in git exec-path or PATH)");
     expect(git(f.worktree, "branch", "--show-current")).toBe("agent/job\n");
     expect(f.calls()).toEqual([]);
+  });
+
+  test("finds git-cow in Git's exec path without it being on PATH", () => {
+    const f = fixture();
+    renameSync(join(f.bin, "git-cow"), join(f.execPath, "git-cow"));
+    renameSync(join(f.bin, "mode"), join(f.execPath, "mode"));
+    expect(addWorktree({ ...f, command: "git-cow" })).toBe("git-cow");
+    expect(readFileSync(join(f.execPath, "calls.jsonl"), "utf8")).toBe(`${JSON.stringify(["add", "-b", "agent/job", f.worktree, "HEAD"])}\n`);
+    expectWorktree(f);
+    expectHelper(f);
   });
 
   test.each(["partial", "broken", "folder", "branch"])("cleans up a %s attempt before fallback without touching the helper", (mode) => {
@@ -115,11 +133,84 @@ describe("worktree commands", () => {
     expect(f.calls()).toEqual([["add", "-b", f.branch, f.worktree, "HEAD"]]);
   });
 
-  test("an executable that cannot start falls back", () => {
+  test.each(["partial", "broken"])("a %s failure preserves unrelated missing worktree registrations", (mode) => {
+    const f = fixture(mode);
+    const unrelated = ["unlocked", "locked"].map((name) => {
+      const path = join(f.home, name);
+      git(f.repo, "worktree", "add", "-b", name, path);
+      if (name === "locked") git(f.repo, "worktree", "lock", "--reason", "unmounted drive", path);
+      const admin = git(path, "rev-parse", "--absolute-git-dir").trim();
+      const files = ["gitdir", "HEAD", ...(name === "locked" ? ["locked"] : [])]
+        .map((file) => ({ file, contents: readFileSync(join(admin, file), "utf8") }));
+      rmSync(path, { recursive: true });
+      return { path, admin, files };
+    });
+    mkdirSync(dirname(f.worktree), { recursive: true });
+    const alias = join(f.home, "aliased-parent");
+    symlinkSync(dirname(f.worktree), alias);
+    expect(addWorktree({ ...f, worktree: join(alias, basename(f.worktree)), command: "git-cow" }))
+      .toBe("git (fallback: git-cow exited 7)");
+    expect(git(f.worktree, "branch", "--show-current")).toBe("agent/job\n");
+    expect(readFileSync(join(f.worktree, "README.md"), "utf8")).toBe("fixture\n");
+    for (const { admin, files } of unrelated) {
+      for (const { file, contents } of files) expect(readFileSync(join(admin, file), "utf8")).toBe(contents);
+    }
+    const registrations = git(f.repo, "worktree", "list", "--porcelain", "-z").split("\0").filter((entry) => entry.startsWith("worktree "));
+    expect(registrations.sort()).toEqual([f.repo, f.helper, f.worktree, ...unrelated.map(({ path }) => path)].map((path) => `worktree ${path}`).sort());
+    expectHelper(f);
+  });
+
+  test.each([
+    ["stderr", `clone failed: ${"x".repeat(186)}`],
+    ["stdout", "stdout clone failure"],
+  ])("fallback records normalized and capped %s diagnostics", (mode, diagnostic) => {
+    const f = fixture(mode);
+    const method = addWorktree({ ...f, command: "git-cow" });
+    expect(method).toBe(`git (fallback: git-cow exited 7: ${diagnostic})`);
+    expect(WorktreeMethodSchema.parse(method)).toBe(method);
+    expectWorktree(f);
+    expectHelper(f);
+  });
+
+  test("cleans a broken registration when the repository is itself a linked worktree", () => {
+    const f = fixture("broken");
+    const repo = join(f.home, "linked", "repo");
+    git(f.repo, "worktree", "add", "--detach", repo);
+    expect(addWorktree({ ...f, repo, command: "git-cow" })).toBe("git (fallback: git-cow exited 7)");
+    expect(git(f.worktree, "branch", "--show-current")).toBe("agent/job\n");
+    expect(readFileSync(join(f.worktree, "README.md"), "utf8")).toBe("fixture\n");
+    const registrations = git(f.repo, "worktree", "list", "--porcelain", "-z").split("\0").filter((entry) => entry.startsWith("worktree "));
+    expect(registrations.sort()).toEqual([f.repo, repo, f.helper, f.worktree].map((path) => `worktree ${path}`).sort());
+    expectHelper(f);
+  });
+
+  test("an executable that cannot start records the Git diagnostic before fallback", () => {
     const f = fixture();
     writeFileSync(join(f.bin, "git-cow"), "#!/no/such/interpreter\n");
-    expect(addWorktree({ ...f, command: "git-cow" })).toMatch(/^git \(fallback: /);
+    expect(addWorktree({ ...f, command: "git-cow" })).toMatch(/^git \(fallback: git-cow exited 128: [^\n]*(cannot exec|not able to execute)[^\n]*\)$/);
     expect(git(f.worktree, "branch", "--show-current")).toBe("agent/job\n");
+  });
+
+  test("a timed-out git-cow attempt is cleaned up before fallback", () => {
+    const f = fixture("timeout");
+    const execute = execFileSync;
+    const spy = vi.spyOn(childProcess, "execFileSync").mockImplementation((file, args, options) => {
+      if (file === "git" && args?.[0] === "cow") {
+        expect(options).toMatchObject({ timeout: 600_000 });
+        return execute(file, args, { ...options, timeout: 1000 });
+      }
+      return execute(file, args, options);
+    });
+    syncBuiltinESMExports();
+    try {
+      expect(addWorktree({ ...f, command: "git-cow" })).toBe("git (fallback: git-cow timed out)");
+      expectWorktree(f);
+      expectHelper(f);
+      expect(f.calls()).toEqual([["add", "-b", f.branch, f.worktree, "HEAD"]]);
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
 
   test("cleans a failed attempt in a pre-existing empty directory before fallback", () => {
@@ -146,6 +237,7 @@ describe("worktree commands", () => {
   test.skipIf(!realCow)("real git-cow creates a valid worktree and its helper checkout", () => {
     const f = fixture();
     vi.stubEnv("PATH", originalPath);
+    vi.stubEnv("GIT_EXEC_PATH", originalExecPath);
     expect(addWorktree({ ...f, command: "git-cow" })).toBe("git-cow");
     expectWorktree(f);
     expect(readFileSync(join(f.helper, "README.md"), "utf8")).toBe("fixture\n");
@@ -244,7 +336,7 @@ test.each(["missing", "partial"])("%s fallback is recorded in thread, inbox and 
   const box = createMailbox(ctx);
   const sent = await box.send({ repo: "demo", target: "fake", message: "work" });
   if (!sent.ok) throw new Error(sent.error);
-  const method = mode === "missing" ? "git (fallback: git-cow not found on PATH)" : "git (fallback: git-cow exited 7)";
+  const method = mode === "missing" ? "git (fallback: git-cow not found in git exec-path or PATH)" : "git (fallback: git-cow exited 7)";
   await expect.poll(() => box.inbox(sent.thread_id)).toMatchObject({ status: "succeeded", worktree_method: method });
   expect(ThreadSchema.parse(readJson(join(f.home, "threads", sent.thread_id, "thread.json"))).worktreeMethod).toBe(method);
   expect(box.threads().threads).toMatchObject([{ worktree_method: method }]);

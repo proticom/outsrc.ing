@@ -38,7 +38,7 @@ function fixture(code: string): RunSpec {
 const completed = `process.stdout.write(JSON.stringify({kind:"completed",message:"Fixture complete",sessionId:"fixture-session",findings:[]}));`;
 
 describe("standalone wrapper", () => {
-  test.each<WorktreeMethod>(["git", "git-cow", "git (fallback: git-cow exited 7)"])("records worktree method %s in the run log", async (worktreeMethod) => {
+  test.each<WorktreeMethod>(["git", "git-cow", "git (fallback: git-cow exited 7)", "git (fallback: git-cow exited 7: clone failed)"])("records worktree method %s in the run log", async (worktreeMethod) => {
     const spec = { ...fixture(completed), worktreeMethod };
     expect(await run(spec)).toMatchObject({ kind: "completed", message: "Fixture complete" });
     expect(readFileSync(join(spec.runDir, "run.log"), "utf8")).toBe(`Worktree method: ${worktreeMethod}\n{"kind":"completed","message":"Fixture complete","sessionId":"fixture-session","findings":[]}`);

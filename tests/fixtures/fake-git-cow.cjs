@@ -25,4 +25,13 @@ if (mode === "folder" || mode === "branch") {
   git("worktree", ...args);
   if (mode === "broken") rmSync(join(worktree, ".git"));
 }
+if (mode === "stderr") {
+  process.stderr.write(` \nclone\tfailed:\n ${"x".repeat(300)}\n`);
+  process.stdout.write("ignored stdout\n");
+}
+if (mode === "stdout") {
+  process.stderr.write(" \n\t ");
+  process.stdout.write(" \nstdout\tclone\nfailure \n");
+}
+if (mode === "timeout") Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500);
 process.exit(mode === "success" ? 0 : 7);
