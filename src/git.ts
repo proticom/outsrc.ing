@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { accessSync, constants, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { z } from "zod";
@@ -23,6 +23,61 @@ function gitCowFailureReason(error: unknown): string {
   return diagnostic ? `${status}: ${diagnostic}` : status;
 }
 
+type GitCowResult = { kind: "created" } | { kind: "failed"; reason: string };
+
+async function runGitCow(opts: { repo: string; args: string[]; timeoutMs: number }): Promise<GitCowResult> {
+  if (process.platform === "win32") {
+    try {
+      execFileSync("git", opts.args, { cwd: opts.repo, stdio: "pipe", timeout: opts.timeoutMs });
+      return { kind: "created" };
+    } catch (error) { return { kind: "failed", reason: gitCowFailureReason(error) }; }
+  }
+  let child;
+  try { child = spawn("git", opts.args, { cwd: opts.repo, detached: true, stdio: ["ignore", "pipe", "pipe"] }); }
+  catch (error) { return { kind: "failed", reason: gitCowFailureReason(error) }; }
+  const pid = child.pid;
+  const signalGroup = (signal: NodeJS.Signals) => {
+    if (pid === undefined) return;
+    try { process.kill(-pid, signal); }
+    catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+    }
+  };
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout = (stdout + chunk).replace(/\s+/g, " ").trimStart().slice(0, 201); });
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr = (stderr + chunk).replace(/\s+/g, " ").trimStart().slice(0, 201); });
+  return new Promise((resolve, reject) => {
+    let result: GitCowResult | undefined;
+    let phase: "running" | "terminating" | "terminated" = "running";
+    const finish = () => {
+      if (!result || phase === "terminating") return;
+      clearTimeout(timer);
+      resolve(phase === "terminated" ? { kind: "failed", reason: "git-cow timed out" } : result);
+    };
+    const timer = setTimeout(() => {
+      phase = "terminating";
+      try { signalGroup("SIGTERM"); }
+      catch (error) { reject(error); return; }
+      setTimeout(() => {
+        try {
+          signalGroup("SIGKILL");
+          phase = "terminated";
+          finish();
+        } catch (error) { reject(error); }
+      }, 2000);
+    }, opts.timeoutMs);
+    child.once("error", (error) => {
+      result = { kind: "failed", reason: gitCowFailureReason(error) };
+      finish();
+    });
+    child.once("close", (status) => {
+      result = status === 0 ? { kind: "created" } : { kind: "failed", reason: gitCowFailureReason({ status, stdout, stderr }) };
+      finish();
+    });
+  });
+}
+
 function removeWorktreeRegistration(opts: { repo: string; worktree: string }): void {
   const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd: opts.repo, encoding: "utf8" }).trim();
   const registrations = resolve(opts.repo, commonDir, "worktrees");
@@ -40,16 +95,17 @@ function removeWorktreeRegistration(opts: { repo: string; worktree: string }): v
   }
 }
 
-export function addWorktree(opts: {
+export async function addWorktree(opts: {
   repo: string;
   worktree: string;
   branch: string;
   ref?: string;
   command?: WorktreeCommand;
-}): WorktreeMethod {
+}): Promise<WorktreeMethod> {
   mkdirSync(dirname(opts.worktree), { recursive: true });
   let method: WorktreeMethod = "git";
   if (opts.command === "git-cow") {
+    const timeoutMs = z.coerce.number().int().positive().max(2_147_483_647).default(600_000).parse(process.env.OUTSRC_GIT_COW_TIMEOUT_MS);
     const execPath = execFileSync("git", ["--exec-path"], { cwd: opts.repo, encoding: "utf8" }).trim();
     const available = [execPath, ...(process.env.PATH ?? "").split(delimiter)].some((directory) => {
       const executable = resolve(opts.repo, directory, "git-cow");
@@ -66,21 +122,18 @@ export function addWorktree(opts: {
       const existingFiles = destination !== undefined && (!destination.isDirectory() || readdirSync(opts.worktree).length > 0);
       const existingWorktree = registered();
       const existingBranch = branchExists();
-      try {
-        execFileSync("git", ["cow", "add", "-b", opts.branch, opts.worktree, opts.ref ?? "HEAD"], { cwd: opts.repo, stdio: "pipe", timeout: 600_000 });
-        return "git-cow";
-      } catch (error) {
-        if (!existingWorktree && !existingFiles) {
-          if (registered()) {
-            try { execFileSync("git", ["worktree", "remove", "--force", opts.worktree], { cwd: opts.repo, stdio: "pipe" }); }
-            catch { removeWorktreeRegistration(opts); }
-          }
-          rmSync(opts.worktree, { recursive: true, force: true });
-          if (destination) mkdirSync(opts.worktree);
+      const result = await runGitCow({ repo: opts.repo, args: ["cow", "add", "-b", opts.branch, opts.worktree, opts.ref ?? "HEAD"], timeoutMs });
+      if (result.kind === "created") return "git-cow";
+      if (!existingWorktree && !existingFiles) {
+        if (registered()) {
+          try { execFileSync("git", ["worktree", "remove", "--force", opts.worktree], { cwd: opts.repo, stdio: "pipe" }); }
+          catch { removeWorktreeRegistration(opts); }
         }
-        if (!existingBranch && branchExists()) execFileSync("git", ["branch", "-D", opts.branch], { cwd: opts.repo, stdio: "pipe" });
-        method = `git (fallback: ${gitCowFailureReason(error)})`;
+        rmSync(opts.worktree, { recursive: true, force: true });
+        if (destination) mkdirSync(opts.worktree);
       }
+      if (!existingBranch && branchExists()) execFileSync("git", ["branch", "-D", opts.branch], { cwd: opts.repo, stdio: "pipe" });
+      method = `git (fallback: ${result.reason})`;
     }
   }
   execFileSync(

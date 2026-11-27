@@ -14,7 +14,7 @@ import type { Config } from "../src/types.ts";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-function fixture() {
+async function fixture() {
   const home = mkdtempSync(join(tmpdir(), "outsrc-migrate-test-"));
   roots.push(home);
   const repo = join(home, "repo");
@@ -25,7 +25,7 @@ function fixture() {
   const workspace = join(home, "worktrees", "demo", id);
   const branch = `agent/outsrc-${id}`;
   const base = getBaseCommit(repo);
-  addWorktree({ repo, worktree: workspace, branch });
+  await addWorktree({ repo, worktree: workspace, branch });
   mkdirSync(directory, { recursive: true });
   const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
   if (exited.status !== 0) throw new Error("fixture process failed");
@@ -42,8 +42,8 @@ function fixture() {
 }
 
 describe("legacy terminal-thread migration", () => {
-  it("preserves completed artifacts and recovers the original base after agent commits", () => {
-    const f = fixture();
+  it("preserves completed artifacts and recovers the original base after agent commits", async () => {
+    const f = await fixture();
     const original = readFileSync(f.file, "utf8");
     writeFileSync(join(f.workspace, "result.txt"), "agent result\n");
     execFileSync("git", ["add", "result.txt"], { cwd: f.workspace });
@@ -65,39 +65,39 @@ describe("legacy terminal-thread migration", () => {
   });
 
   it("preserves failure codes and cancellation while leaving session IDs unknown", async () => {
-    const failed = fixture();
+    const failed = await fixture();
     writeFileSync(join(failed.directory, "exit_code"), "2");
     expect(migrateLegacy(failed)).toEqual({ migrated: [failed.id], skipped: [] });
     expect(createMailbox(failed).inbox(failed.id)).toMatchObject({ status: "failed", exit_code: 2, message: "Saved original output", session_id: null });
     expect(await createMailbox(failed).send({ thread_id: failed.id, message: "Continue" })).toMatchObject({ ok: false, error: expect.stringContaining("no resumable session") });
-    const cancelled = fixture();
+    const cancelled = await fixture();
     writeFileSync(join(cancelled.directory, "cancelled"), "1");
     writeFileSync(join(cancelled.directory, "question.json"), JSON.stringify({ id: "old-question", text: "Question" }));
     expect(migrateLegacy(cancelled)).toEqual({ migrated: [cancelled.id], skipped: [] });
     expect(createMailbox(cancelled).inbox(cancelled.id)).toMatchObject({ status: "cancelled", exit_code: null, session_id: null });
   });
 
-  it("imports a dead unfinished job as failed using its existing output", () => {
-    const f = fixture();
+  it("imports a dead unfinished job as failed using its existing output", async () => {
+    const f = await fixture();
     expect(migrateLegacy(f)).toEqual({ migrated: [f.id], skipped: [] });
     expect(createMailbox(f).inbox(f.id)).toMatchObject({ status: "failed", exit_code: null, message: "Saved original output" });
   });
 
-  it("leaves active and unanswered legacy jobs unchanged", () => {
-    const active = fixture();
+  it("leaves active and unanswered legacy jobs unchanged", async () => {
+    const active = await fixture();
     writeJson(active.file, { ...active.record, pid: process.pid });
     const before = readFileSync(active.file, "utf8");
     expect(migrateLegacy(active)).toEqual({ migrated: [], skipped: [{ thread_id: active.id, reason: "legacy job is still active; finish it before migrating" }] });
     expect(readFileSync(active.file, "utf8")).toBe(before);
     expect(existsSync(join(active.directory, "thread.legacy.json"))).toBe(false);
-    const waiting = fixture();
+    const waiting = await fixture();
     writeFileSync(join(waiting.directory, "question.json"), JSON.stringify({ id: "question-one", text: "Which color?" }));
     expect(migrateLegacy(waiting)).toEqual({ migrated: [], skipped: [{ thread_id: waiting.id, reason: "legacy job is waiting for input; finish it with the previous harness before migrating" }] });
     expect(existsSync(join(waiting.directory, "runs"))).toBe(false);
   });
 
-  it("skips a missing branch reflog instead of guessing the starting commit", () => {
-    const f = fixture();
+  it("skips a missing branch reflog instead of guessing the starting commit", async () => {
+    const f = await fixture();
     execFileSync("git", ["reflog", "expire", "--expire=all", `refs/heads/${f.branch}`], { cwd: f.repo });
     writeFileSync(join(f.directory, "exit_code"), "0");
     const before = readFileSync(f.file, "utf8");
@@ -105,8 +105,8 @@ describe("legacy terminal-thread migration", () => {
     expect(readFileSync(f.file, "utf8")).toBe(before);
   });
 
-  it("reruns a partial migration without replacing the preserved original record", () => {
-    const f = fixture();
+  it("reruns a partial migration without replacing the preserved original record", async () => {
+    const f = await fixture();
     writeFileSync(join(f.directory, "exit_code"), "0");
     const backup = join(f.directory, "thread.legacy.json");
     copyFileSync(f.file, backup);
@@ -118,8 +118,8 @@ describe("legacy terminal-thread migration", () => {
     expect(ResultSchema.parse(readJson(join(f.directory, "runs", "legacy", "result.json")))).toMatchObject({ kind: "completed", exitCode: 0, message: "Saved original output" });
   });
 
-  it("skips retained later reflog entries when the initial branch entry has expired", () => {
-    const f = fixture();
+  it("skips retained later reflog entries when the initial branch entry has expired", async () => {
+    const f = await fixture();
     writeFileSync(join(f.workspace, "result.txt"), "agent result\n");
     execFileSync("git", ["add", "result.txt"], { cwd: f.workspace });
     execFileSync("git", ["commit", "-m", "Agent result"], { cwd: f.workspace });

@@ -79,6 +79,16 @@ export function createMailbox(ctx: MailboxContext) {
     const run = RunSchema.parse(readJson(join(dir, "run.json")));
     return { dir, run };
   }
+  function launching(threadId: ThreadId): boolean {
+    const lock = join(threadDir(ctx.home, threadId), "launch.lock");
+    let owner: number;
+    try { owner = Number(readFileSync(lock, "utf8")); }
+    catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+      throw error;
+    }
+    return Number.isInteger(owner) && owner > 1 && pidAlive(owner);
+  }
   function resultFor(thread: ThreadRecord): RunResult | null {
     const { dir, run } = current(thread);
     // Observe the wrapper before reading its result. A wrapper seen as gone has already published anything it
@@ -101,7 +111,7 @@ export function createMailbox(ctx: MailboxContext) {
       writeJson(join(dir, "result.json"), failed);
       return failed;
     }
-    if (Date.now() - Date.parse(run.createdAt) < 30_000) return null;
+    if (launching(thread.id) || Date.now() - Date.parse(run.createdAt) < 30_000) return null;
     const failed = failedResult("Task startup was interrupted before the wrapper started", run.sessionId);
     writeJson(join(dir, "result.json"), failed);
     return failed;
@@ -185,8 +195,13 @@ export function createMailbox(ctx: MailboxContext) {
       if (!input.message.trim()) throw new Error("message is required");
       if (process.env[JOB_MARKER]) throw new Error("outsrc jobs cannot send new work; only the caller that started the job can");
       const { maxJobs, maxRunMinutes } = resolveLimits(ctx.config.limits);
-      const active = threads().threads.filter((item) => item.status === "working").length;
-      if (maxJobs !== null && active >= maxJobs) throw new Error(`active job limit reached (${maxJobs}); the owner can change it with outsrc config set limits.max_jobs <n>`);
+      const active = new Set(threads().threads.filter((item) => item.status === "working").map((item) => item.thread_id));
+      if (existsSync(threadsDir(ctx.home))) {
+        for (const name of readdirSync(threadsDir(ctx.home))) {
+          if (MINTED_THREAD_ID.test(name) && launching(parseThreadId(name))) active.add(parseThreadId(name));
+        }
+      }
+      if (maxJobs !== null && active.size >= maxJobs) throw new Error(`active job limit reached (${maxJobs}); the owner can change it with outsrc config set limits.max_jobs <n>`);
       const requestFingerprint = fingerprint(input);
       if (input.request_id) {
         const requests = join(ctx.home, "requests");
@@ -271,7 +286,7 @@ export function createMailbox(ctx: MailboxContext) {
         }
       }
       if (first) {
-        thread.worktreeMethod = addWorktree({ repo: repo.path, worktree: thread.worktree, branch: thread.branch, command: ctx.config.worktree?.command ?? "git", ...(input.ref !== undefined ? { ref: input.ref.trim() } : {}) });
+        thread.worktreeMethod = await addWorktree({ repo: repo.path, worktree: thread.worktree, branch: thread.branch, command: ctx.config.worktree?.command ?? "git", ...(input.ref !== undefined ? { ref: input.ref.trim() } : {}) });
         if (thread.taskKind !== "task") hideAgentConfig(thread.worktree);
         thread.baseCommit = getBaseCommit(thread.worktree);
         spec.baseCommit = thread.baseCommit;

@@ -16,26 +16,26 @@ function git(workspace: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd: workspace, encoding: "utf8" }).trim();
 }
 
-function fixture() {
+async function fixture() {
   const home = mkdtempSync(join(tmpdir(), "outsrc-workspace-test-"));
   roots.push(home);
   const repo = join(home, "source");
   const workspace = join(home, "worktree");
   initGitRepo(repo);
   const baseCommit = getBaseCommit(repo);
-  addWorktree({ repo, worktree: workspace, branch: "agent/artifact-test" });
+  await addWorktree({ repo, worktree: workspace, branch: "agent/artifact-test" });
   return { workspace, baseCommit };
 }
 
 describe("worktree artifacts", () => {
-  it("returns an empty diff for an unchanged worktree", () => {
-    const f = fixture();
+  it("returns an empty diff for an unchanged worktree", async () => {
+    const f = await fixture();
     expect(getBaseCommit(f.workspace)).toBe(f.baseCommit);
     expect(collectWorkspaceDiff(f)).toEqual({ patch: "", stat: "", truncated: false });
   });
 
-  it("reports committed, staged, unstaged and untracked changes without altering the index", () => {
-    const f = fixture();
+  it("reports committed, staged, unstaged and untracked changes without altering the index", async () => {
+    const f = await fixture();
     writeFileSync(join(f.workspace, "README.md"), "committed\n");
     git(f.workspace, "add", "README.md");
     git(f.workspace, "commit", "-m", "agent commit");
@@ -56,8 +56,8 @@ describe("worktree artifacts", () => {
     expect(collectWorkspaceDiff(f)).toEqual(first);
   });
 
-  it("retains committed and staged additions that later become ignored", () => {
-    const f = fixture();
+  it("retains committed and staged additions that later become ignored", async () => {
+    const f = await fixture();
     writeFileSync(join(f.workspace, "committed.log"), "committed addition\n");
     git(f.workspace, "add", "committed.log");
     git(f.workspace, "commit", "-m", "Track log");
@@ -69,8 +69,8 @@ describe("worktree artifacts", () => {
     expect(diff.patch).toContain("+staged addition");
   });
 
-  it("reports truncation and returns the requested prefix for larger artifacts", () => {
-    const f = fixture();
+  it("reports truncation and returns the requested prefix for larger artifacts", async () => {
+    const f = await fixture();
     writeFileSync(join(f.workspace, "large.txt"), "long line\n".repeat(10_000));
     const full = collectWorkspaceDiff(f);
     const short = collectWorkspaceDiff({ ...f, maxBytes: 512 });
@@ -80,8 +80,8 @@ describe("worktree artifacts", () => {
     expect(full.truncated).toBe(false);
   });
 
-  it("makes an optional commit and does not create empty commits on retries", () => {
-    const f = fixture();
+  it("makes an optional commit and does not create empty commits on retries", async () => {
+    const f = await fixture();
     expect(commitWorkspace({ workspace: f.workspace, message: "No changes" })).toEqual({ commit: f.baseCommit, changed: false });
     writeFileSync(join(f.workspace, "result.txt"), "result\n");
     const result = commitWorkspace({ workspace: f.workspace, message: "Complete task" });
