@@ -59,6 +59,7 @@ For agents and scripts, `outsrc init --json --repo <path> [--repo <path>] [--loc
 
 | Key | Values | Default |
 | --- | --- | --- |
+| `worktree.command` | `git` or `git-cow` | `git` |
 | `limits.max_jobs` | a positive whole number, or `unlimited` | 4 |
 | `limits.max_run_minutes` | a positive whole number, or `unlimited` | 120 |
 | `repos.<alias>` | `{"path": "/absolute/path"}` to add; `unset` to remove | |
@@ -72,6 +73,22 @@ For agents and scripts, `outsrc init --json --repo <path> [--repo <path>] [--loc
 Values are read as JSON when they parse (`true`, `14`, `[["npm","ci"]]`) and as text otherwise. Aliases may contain dots: `outsrc config set repos.outsrc.ing.auto_commit true` works.
 
 Unlimited is allowed, and `outsrc config` prints what it risks. With no job cap, a looping or confused bot can start many agents at once, slowing the computer and running up usage and rate limits. With no time limit, a stuck agent (waiting for input, a test runner in watch mode, a loop) runs until someone stops it.
+
+### Worktree creation
+
+`worktree.command` defaults to `git`, which runs `git worktree add`. To use [git-cow](https://github.com/gabrielkoerich/git-cow) for copy-on-write worktrees on APFS and other supported volumes:
+
+```sh
+cargo install git-cow --version 0.6.0 --locked
+outsrc config set worktree.command git-cow
+outsrc config list
+```
+
+Put `git-cow` on the outsrc process's `PATH` (Cargo normally installs it in `~/.cargo/bin`). New jobs then run `git cow add -b <branch> <worktree> <ref>`. If the executable is missing or fails, outsrc removes only the attempted job's new worktree registration, leftover folder and newly created branch, then retries with plain git. Existing branches and folders are preserved. git-cow also falls back internally on unsupported volumes or repositories with submodules.
+
+git-cow keeps a helper checkout at `<OUTSRC_HOME>/worktrees/<alias>/.git-cow/<repo-name>`, with lock and warmed files beside it. The default home is `~/.outsrc`. Git lists this helper as a detached worktree. outsrc leaves the helper and its files alone during fallback, discard, retention pruning and migration. Removal uses plain `git worktree remove`, never `git cow remove`.
+
+Thread and inbox JSON expose `worktree_method`, and each run log records the method: `git`, `git-cow`, or `git (fallback: <reason>)`. `git-cow` means its command succeeded, including any fallback inside git-cow itself. Older records without a saved method report `null`. Reviews still hide the checkout's agent configuration files. To restore plain git creation, run `outsrc config unset worktree.command`.
 
 ## Callers
 

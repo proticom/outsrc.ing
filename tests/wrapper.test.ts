@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test, vi } from "vitest";
 import { MAX_LOG_BYTES } from "../src/limits.ts";
+import type { WorktreeMethod } from "../src/git.ts";
 import { parseThreadId, type RunSpec } from "../src/types.ts";
 import { getBaseCommit } from "../src/workspace.ts";
 import { run } from "../src/wrapper.ts";
@@ -37,6 +38,12 @@ function fixture(code: string): RunSpec {
 const completed = `process.stdout.write(JSON.stringify({kind:"completed",message:"Fixture complete",sessionId:"fixture-session",findings:[]}));`;
 
 describe("standalone wrapper", () => {
+  test.each<WorktreeMethod>(["git", "git-cow", "git (fallback: git-cow exited 7)"])("records worktree method %s in the run log", async (worktreeMethod) => {
+    const spec = { ...fixture(completed), worktreeMethod };
+    expect(await run(spec)).toMatchObject({ kind: "completed", message: "Fixture complete" });
+    expect(readFileSync(join(spec.runDir, "run.log"), "utf8")).toBe(`Worktree method: ${worktreeMethod}\n{"kind":"completed","message":"Fixture complete","sessionId":"fixture-session","findings":[]}`);
+  });
+
   test("keeps reported native tokens when the agent exceeds its deadline", async () => {
     const spec = fixture(`process.stdout.write(JSON.stringify({usage:{input_tokens:17,output_tokens:4}}));setInterval(()=>{},1000);`);
     spec.target.adapter = "claude";

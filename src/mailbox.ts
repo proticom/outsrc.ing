@@ -120,7 +120,7 @@ export function createMailbox(ctx: MailboxContext) {
       const thread = loadThread(threadId);
       const { dir, run } = current(thread);
       const result = resultFor(thread);
-      const fields = usageFields(thread, result);
+      const fields = { ...usageFields(thread, result), worktree_method: thread.worktreeMethod ?? null };
       if (!result) {
         const age = Math.max(0, Date.now() - Date.parse(run.createdAt));
         const retry = ctx.retryAfterSeconds ?? Math.min(300, 30 * 2 ** Math.floor(age / 120_000));
@@ -271,11 +271,12 @@ export function createMailbox(ctx: MailboxContext) {
         }
       }
       if (first) {
-        addWorktree({ repo: repo.path, worktree: thread.worktree, branch: thread.branch, ...(input.ref !== undefined ? { ref: input.ref.trim() } : {}) });
+        thread.worktreeMethod = addWorktree({ repo: repo.path, worktree: thread.worktree, branch: thread.branch, command: ctx.config.worktree?.command ?? "git", ...(input.ref !== undefined ? { ref: input.ref.trim() } : {}) });
         if (thread.taskKind !== "task") hideAgentConfig(thread.worktree);
         thread.baseCommit = getBaseCommit(thread.worktree);
         spec.baseCommit = thread.baseCommit;
       }
+      spec.worktreeMethod = thread.worktreeMethod;
       mkdirSync(runDir, { recursive: true, mode: 0o700 }); try { chmodSync(runDir, 0o700); } catch {}
       writeJson(join(runDir, "run.json"), run);
       writeJson(join(runDir, "spec.json"), spec);
@@ -310,6 +311,7 @@ export function createMailbox(ctx: MailboxContext) {
         const status = inbox(name);
         if (!status.ok) return [];
         return [{ thread_id: thread.id, repo: thread.repo, target: thread.target, kind: thread.taskKind,
+          worktree_method: thread.worktreeMethod ?? null,
           status: status.status, discarded: existsSync(join(threadDir(ctx.home, thread.id), "discarded")), created_at: thread.createdAt, run_id: thread.latestRunId,
           run_count: readdirSync(join(threadDir(ctx.home, thread.id), "runs")).length,
           message: status.status === "working" ? status.progress : status.message }];

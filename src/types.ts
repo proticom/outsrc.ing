@@ -2,6 +2,7 @@ import type { Discover } from "./model-cache.js";
 import type { Limits } from "./limits.js";
 import type { AdapterTarget, Finding } from "./adapters.js";
 import type { RunUsage } from "./usage.js";
+import type { WorktreeCommand, WorktreeMethod } from "./git.js";
 
 export type ThreadId = string & { readonly __brand: "ThreadId" };
 export type RunId = string & { readonly __brand: "RunId" };
@@ -60,7 +61,7 @@ export type TargetConfig = {
   description?: string;
   costNote?: string;
 };
-export type Config = { repos: RepoConfig[]; targets: Record<string, TargetConfig>; limits?: Limits };
+export type Config = { repos: RepoConfig[]; targets: Record<string, TargetConfig>; limits?: Limits; worktree?: { command: WorktreeCommand } };
 
 export type ThreadRecord = {
   version: 2;
@@ -73,6 +74,7 @@ export type ThreadRecord = {
   taskKind: TaskKind;
   base: string | null;
   worktree: string;
+  worktreeMethod?: WorktreeMethod | undefined;
   branch: string;
   baseCommit: string;
   createdAt: string;
@@ -91,6 +93,7 @@ export type RunSpec = {
   runId: string;
   runDir: string;
   worktree: string;
+  worktreeMethod?: WorktreeMethod | undefined;
   baseCommit: string;
   target: AdapterTarget;
   model: string | null;
@@ -142,7 +145,7 @@ export type InboxResult = (
   | { ok: true; status: "working"; retry_after_seconds: number; run_id: string; progress: string }
   | { ok: true; status: "needs_input"; retry_after_seconds: number; run_id: string; message: string; question_id: string; session_id: string | null }
   | { ok: true; status: "succeeded" | "failed" | "cancelled"; run_id: string; message: string; branch: string; worktree: string; diffstat: { raw: string }; exit_code: number | null; session_id: string | null; findings: Finding[]; commit: string | null }
-) & UsageFields | { ok: false; error: string };
+) & UsageFields & { worktree_method: WorktreeMethod | null } | { ok: false; error: string };
 export type LogResult = { ok: true; text: string } | { ok: false; error: string };
 export type StopResult = { ok: true; stopped: true } | { ok: false; error: string };
 export type MailboxContext = {

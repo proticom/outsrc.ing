@@ -7,6 +7,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { AGENT_OUTPUT_SCHEMA, buildInvocation, parseAgentOutput, type AgentOutput } from "./adapters.js";
 import { captureProcess } from "./job.js";
+import { WorktreeMethodSchema } from "./git.js";
 import { LOG_TRUNCATED, MAX_LOG_BYTES, MAX_RUN_MS } from "./limits.js";
 import { engineDir, isPluginAdapter, teardownInvocation } from "./plugins.js";
 import { writeJson } from "./state.js";
@@ -19,6 +20,7 @@ const RunSpecSchema: z.ZodType<RunSpec> = z.object({
   runId: z.string(),
   runDir: z.string(),
   worktree: z.string(),
+  worktreeMethod: WorktreeMethodSchema.optional(),
   baseCommit: z.string(),
   target: z.object({
     adapter: z.enum(["claude", "codex", "grok", "custom", "codex-plugin", "grok-plugin"]),
@@ -152,7 +154,7 @@ export async function run(spec: RunSpec): Promise<RunResult> {
     });
   }
   try {
-    writeFileSync(logPath, "");
+    writeFileSync(logPath, spec.worktreeMethod ? `Worktree method: ${spec.worktreeMethod}\n` : "");
     const schemaPath = join(spec.runDir, "output-schema.json");
     writeFileSync(schemaPath, JSON.stringify(AGENT_OUTPUT_SCHEMA));
     for (const [index, command] of spec.setup.entries()) {
