@@ -56,15 +56,15 @@ if (mode === "escape") {
     process.exit(0);
   });
   setInterval(() => {}, 1000);
-} else if (mode === "timeout" || mode === "timeout-orphan" || mode === "failed-child") {
-  const child = spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); process.stdout.write("ready"); setInterval(() => {}, 1000);'], { stdio: ["ignore", "pipe", "ignore"] });
+} else if (mode === "timeout" || mode === "timeout-orphan" || mode === "failed-child" || mode === "term-honoring") {
+  const child = spawn(process.execPath, ["-e", `${mode === "term-honoring" ? "" : 'process.on("SIGTERM", () => {});'} process.stdout.write("ready"); setInterval(() => {}, 1000);`], { stdio: ["ignore", "pipe", "ignore"] });
   child.stdout.once("data", () => {
     writeFileSync(join(__dirname, "child.pid"), String(child.pid));
     writeFileSync(join(__dirname, "stub.pid"), String(process.pid));
     appendFileSync(join(__dirname, "groups.jsonl"), `${JSON.stringify({ stub: process.pid, child: child.pid })}\n`);
     if (mode === "failed-child") process.exit(7);
   });
-  process.on("SIGTERM", () => {
+  if (mode !== "term-honoring") process.on("SIGTERM", () => {
     writeFileSync(join(__dirname, "terminated"), "SIGTERM\n");
     if (mode === "timeout-orphan") process.exit(0);
   });

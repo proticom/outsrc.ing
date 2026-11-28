@@ -57,6 +57,19 @@ function gitCowGroupAlive(pid: number): boolean {
   }
 }
 
+function gitCowGroupExited(pid: number, error: unknown): boolean {
+  if (!(error instanceof Error && "code" in error)) return false;
+  if (error.code === "ESRCH") return true;
+  if (error.code !== "EPERM") return false;
+  try {
+    const table = execFileSync("ps", ["-A", "-o", "pgid=,stat="], { encoding: "utf8", stdio: "pipe", timeout: 200 });
+    return table.trim().split("\n").every((line) => {
+      const [, group, status] = /^\s*(\d+)\s+(\S+)\s*$/.exec(line) ?? [];
+      return group !== undefined && status !== undefined && (Number(group) !== pid || status.startsWith("Z"));
+    });
+  } catch { return false; }
+}
+
 function stopGitCowAttempts(reason: string): void {
   const attempts = [...activeGitCow];
   for (const [pid] of attempts) { try { process.kill(-pid, "SIGTERM"); } catch {} }
@@ -64,12 +77,12 @@ function stopGitCowAttempts(reason: string): void {
   const wait = new Int32Array(new SharedArrayBuffer(4));
   while (Date.now() < deadline && attempts.some(([pid]) => {
     try { return gitCowGroupAlive(pid); }
-    catch { return true; }
+    catch (error) { return !gitCowGroupExited(pid, error); }
   })) Atomics.wait(wait, 0, 0, 20);
   const stopped = new Set<number>();
   for (const [pid] of attempts) {
     try { process.kill(-pid, "SIGKILL"); stopped.add(pid); }
-    catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") stopped.add(pid); }
+    catch (error) { if (gitCowGroupExited(pid, error)) stopped.add(pid); }
   }
   for (const [pid, attempt] of attempts) {
     if (stopped.has(pid)) {

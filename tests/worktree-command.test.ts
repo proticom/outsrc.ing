@@ -22,6 +22,10 @@ const realCow = executable("git-cow", [originalExecPath, ...originalPath.split(d
 const realGit = executable("git");
 const sessionTool = executable("perl") ?? executable("python3");
 const sleep = executable("sleep");
+const canInspectProcessGroups = (() => {
+  try { execFileSync("ps", ["-A", "-o", "pgid=,stat="], { stdio: "pipe", timeout: 200 }); return true; }
+  catch { return false; }
+})();
 const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -85,8 +89,26 @@ function expectWorktree(f: ReturnType<typeof fixture>) {
 }
 
 describe("worktree commands", () => {
-  test.skipIf(process.platform === "win32").each(["SIGTERM", "SIGINT", "SIGHUP", "exit", "listener", "handled", "late", "late-prepended", "removed", "denied-exit", "concurrent"])("sender shutdown %s removes only its attempts and preserves exit semantics", async (mode) => {
-    const f = fixture("timeout");
+  test.skipIf(process.platform === "win32").for(["SIGTERM", "SIGINT", "SIGHUP", "exit", "listener", "handled", "late", "late-prepended", "removed", "denied-exit", "concurrent", "term-honoring", "ps-zombies", "ps-absent", "ps-live-member", "ps-failed", "ps-malformed", "ps-empty"])("sender shutdown %s preserves exit semantics and scopes cleanup", async (mode, context) => {
+    if (mode === "term-honoring" && process.platform === "darwin" && !canInspectProcessGroups) context.skip("ps is unavailable; macOS zombie-group cleanup cannot be verified");
+    const snapshot = mode.startsWith("ps-");
+    if (snapshot && process.platform !== "darwin") context.skip("requires macOS zombie-group EPERM behavior");
+    const f = fixture(mode === "term-honoring" || snapshot ? "term-honoring" : "timeout");
+    const cleanup = !snapshot || mode === "ps-zombies" || mode === "ps-absent";
+    if (snapshot) {
+      rmSync(join(f.bin, "ps"), { force: true });
+      writeFileSync(join(f.bin, "ps"), `#!${process.execPath}\n
+        const { appendFileSync, readFileSync } = require('node:fs');
+        const { join } = require('node:path');
+        const pid = Number(readFileSync(join(__dirname, 'pgid'), 'utf8'));
+        appendFileSync(join(__dirname, 'ps-calls.jsonl'), JSON.stringify(process.argv.slice(2)) + '\\n');
+        const mode = ${JSON.stringify(mode)};
+        if (mode === 'ps-failed') process.exit(7);
+        process.stdout.write(mode === 'ps-malformed' ? 'unreadable process row\\n' : mode === 'ps-empty' ? ''
+          : (mode === 'ps-absent' ? '' : pid + ' Z\\n' + pid + ' Z+\\n') + (pid + 1) + ' S\\n'
+            + (mode === 'ps-live-member' ? pid + ' S+\\n' : ''));
+      `, { mode: 0o700 });
+    }
     mkdirSync(dirname(f.helper), { recursive: true });
     git(f.repo, "worktree", "add", "--detach", f.helper);
     writeFileSync(join(dirname(f.helper), ".repo.lock"), "locked\n");
@@ -97,9 +119,16 @@ describe("worktree commands", () => {
     const outcomes = join(f.home, "outcomes");
     const handled = join(f.home, "handled");
     const script = `
-      import { appendFileSync } from 'node:fs';
+      import { appendFileSync, writeFileSync } from 'node:fs';
       import { addWorktree } from ${JSON.stringify(new URL("../src/git.ts", import.meta.url).href)};
-      const [attempts, mode, outcomes, handled] = JSON.parse(process.argv[1]);
+      const [attempts, mode, outcomes, handled, pgidFile] = JSON.parse(process.argv[1]);
+      if (mode.startsWith('ps-')) {
+        const kill = process.kill.bind(process);
+        process.kill = (pid, signal) => {
+          if (pid < 0) writeFileSync(pgidFile, String(-pid));
+          return kill(pid, signal);
+        };
+      }
       const listener = () => {
         appendFileSync(handled, 'handled once\\n');
         if (mode === 'listener') process.exit(37);
@@ -119,7 +148,7 @@ describe("worktree commands", () => {
       if (mode === 'removed') process.off('SIGTERM', listener);
       await pending;
     `;
-    const sender = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script, JSON.stringify([attempts, mode, outcomes, handled])], {
+    const sender = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script, JSON.stringify([attempts, mode, outcomes, handled, join(f.bin, "pgid")])], {
       env: { ...process.env, OUTSRC_GIT_COW_TIMEOUT_MS: mode === "denied-exit" ? "1000" : "600000" }, stdio: ["pipe", "ignore", "pipe"],
     });
     let stderr = "";
@@ -149,11 +178,15 @@ describe("worktree commands", () => {
         }, { timeout: 2000, interval: 20 }).toBe("ESRCH");
       }
       for (const attempt of attempts) {
-        expect(existsSync(attempt.worktree)).toBe(false);
-        expect(git(f.repo, "branch", "--list", attempt.branch)).toBe("");
+        expect(existsSync(attempt.worktree)).toBe(!cleanup);
+        expect(git(f.repo, "for-each-ref", "--format=%(refname)", `refs/heads/${attempt.branch}`)).toBe(cleanup ? "" : `refs/heads/${attempt.branch}\n`);
       }
       const registrations = git(f.repo, "worktree", "list", "--porcelain", "-z").split("\0").filter((entry) => entry.startsWith("worktree "));
-      expect(registrations.sort()).toEqual([`worktree ${f.repo}`, `worktree ${f.helper}`].sort());
+      expect(registrations.sort()).toEqual([`worktree ${f.repo}`, `worktree ${f.helper}`, ...(!cleanup ? attempts.map(({ worktree }) => `worktree ${worktree}`) : [])].sort());
+      if (snapshot) {
+        const calls = readFileSync(join(f.bin, "ps-calls.jsonl"), "utf8").trim().split("\n");
+        for (const call of calls) expect(JSON.parse(call)).toEqual(["-A", "-o", "pgid=,stat="]);
+      }
       expectHelper(f);
     } finally {
       sender.kill("SIGKILL");
