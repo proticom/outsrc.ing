@@ -4,6 +4,7 @@ import { writeHomeFile } from "./fs-home.js";
 import { join } from "node:path";
 import { z } from "zod";
 import { FindingSchema } from "./adapters.js";
+import { WorktreeMethodSchema } from "./git.js";
 import { emptyUsage, RunUsageSchema } from "./usage.js";
 import { parseAlias, parseRunId, parseTargetName, parseThreadId, STORAGE_ID } from "./types.js";
 
@@ -18,6 +19,7 @@ export const ThreadSchema = z.object({
   taskKind: z.enum(["task", "review", "adversarial_review"]),
   base: z.string().nullable().default(null),
   worktree: z.string(),
+  worktreeMethod: WorktreeMethodSchema.optional(),
   branch: z.string(),
   baseCommit: z.string(),
   createdAt: z.string(),

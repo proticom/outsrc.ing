@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { managedScript } from "./engines.js";
 import { isPluginAdapter, realScript, resolvePluginScript } from "./plugins.js";
 import { DEFAULT_LIMITS } from "./limits.js";
+import { WorktreeCommandSchema } from "./git.js";
 import type { Config, RepoConfig, TargetConfig } from "./types.js";
 
 const Options = z.object({ default: z.string(), allowed: z.array(z.string()).min(1) })
@@ -22,6 +23,7 @@ const TargetSchema = z.object({
 // A positive whole number, or "unlimited".
 const Limit = z.union([z.number().int().positive(), z.literal("unlimited")]);
 export const ConfigSchema = z.object({
+  worktree: z.object({ command: WorktreeCommandSchema.default("git") }).strict().optional(),
   limits: z.object({ max_jobs: Limit.optional(), max_run_minutes: Limit.optional() }).strict().default({}),
   repos: z.array(z.object({
     alias: z.string().min(1),
@@ -78,7 +80,7 @@ export function configFromDocument(document: unknown, path: string): Config {
     maxJobs: limit(parsed.limits.max_jobs, DEFAULT_LIMITS.max_jobs),
     maxRunMinutes: limit(parsed.limits.max_run_minutes, DEFAULT_LIMITS.max_run_minutes),
   };
-  return { repos, targets, limits };
+  return { repos, targets, limits, ...(parsed.worktree !== undefined ? { worktree: parsed.worktree } : {}) };
 }
 export function defaultHome(): string { return process.env.OUTSRC_HOME ?? `${process.env.HOME}/.outsrc`; }
 export function defaultConfigPath(home = defaultHome()): string { return `${home}/config.toml`; }

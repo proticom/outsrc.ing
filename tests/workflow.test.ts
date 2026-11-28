@@ -153,7 +153,7 @@ describe("stdio agent workflow", () => {
       progress = z.string().parse((await h.call("inbox", { thread_id: sent.thread_id })).progress);
       if (!progress.includes("Fixture started")) await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    expect(progress).toBe("Fixture started");
+    expect(progress).toBe("Worktree method: git\nFixture started");
     await h.restart();
     const settled = await h.settle(sent.thread_id);
     expect(settled).toMatchObject({ status: "succeeded", message: "Task completed" });

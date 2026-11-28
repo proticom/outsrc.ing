@@ -25,9 +25,28 @@ describe("outsrc config", () => {
     const { home } = setupHome();
     const listed = outsrc(home, "config").json;
     expect(listed.limits).toEqual({ max_jobs: 4, max_run_minutes: 120 });
+    expect(listed.worktree).toEqual({ command: "git" });
     expect(listed.repos).toEqual([{ alias: "outsrc.ing", path: join(home, "outsrc.ing"), setup: [], auto_commit: false, retention_days: null }]);
     expect(listed.targets.claude).toEqual({ adapter: "claude", command: "claude", args: [], permissions: "auto", models: null, effort: null, description: "", cost_note: "" });
     expect(listed.settings.map((setting: { key: string }) => setting.key)).toContain("limits.max_jobs");
+  });
+
+  test("worktree command can be set, listed and unset; invalid values preserve the file", () => {
+    const { home } = setupHome();
+    const set = outsrc(home, "config", "set", "worktree.command", "git-cow");
+    expect(set.status).toBe(0);
+    expect(set.json).toEqual({ ok: true, key: "worktree.command", value: "git-cow", warning: null });
+    expect(set.stderr).toBe("");
+    const listed = outsrc(home, "config", "list").json;
+    expect(listed.worktree).toEqual({ command: "git-cow" });
+    expect(listed.settings).toContainEqual({ key: "worktree.command", values: "git or git-cow", default: "git", meaning: "Create job worktrees with git, or git-cow copy-on-write clones with a plain git fallback." });
+    const before = readFileSync(join(home, "config.toml"), "utf8");
+    const invalid = outsrc(home, "config", "set", "worktree.command", "svn");
+    expect(invalid.status).toBe(1);
+    expect(invalid.json).toMatchObject({ ok: false, error: expect.stringContaining("invalid value for worktree.command") });
+    expect(readFileSync(join(home, "config.toml"), "utf8")).toBe(before);
+    expect(outsrc(home, "config", "unset", "worktree.command").json).toEqual({ ok: true, key: "worktree.command", value: null, warning: null });
+    expect(outsrc(home, "config", "list").json.worktree).toEqual({ command: "git" });
   });
 
   test("unlimited is allowed and comes with the risk", () => {

@@ -351,7 +351,7 @@ describe("log", () => {
     const log = box.log({ thread_id: sent.thread_id });
     expect(log.ok).toBe(true);
     if (!log.ok) throw new Error(log.error);
-    expect(log.text).toBe('{"kind":"completed","message":"Task completed","sessionId":"fixture-session","findings":[]}');
+    expect(log.text).toBe('Worktree method: git\n{"kind":"completed","message":"Task completed","sessionId":"fixture-session","findings":[]}');
   });
 
   test("unknown thread errors", () => {

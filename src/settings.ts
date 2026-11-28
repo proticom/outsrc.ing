@@ -8,6 +8,7 @@ import { DEFAULT_LIMITS, resolveLimits } from "./limits.js";
 
 // Every setting an owner can change, with its default and what it means. Keys use the config.toml names.
 export const SETTINGS_HELP = [
+  { key: "worktree.command", values: "git or git-cow", default: "git", meaning: "Create job worktrees with git, or git-cow copy-on-write clones with a plain git fallback." },
   { key: "limits.max_jobs", values: 'positive whole number or "unlimited"', default: DEFAULT_LIMITS.max_jobs, meaning: "Most jobs working at once, across every caller." },
   { key: "limits.max_run_minutes", values: 'positive whole number or "unlimited"', default: DEFAULT_LIMITS.max_run_minutes, meaning: "A run is stopped after this long." },
   { key: "repos.<alias>", values: '{"path": "/absolute/path"}', default: null, meaning: "Add a repository agents may work in. unset removes it." },
@@ -35,8 +36,9 @@ export const RISKS = {
   command: "outsrc will run this program as you, with your files and accounts.",
 } as const;
 
-type Document = { limits?: Record<string, unknown>; repos?: Record<string, unknown>[]; targets?: Record<string, Record<string, unknown>> } & Record<string, unknown>;
+type Document = { worktree?: Record<string, unknown>; limits?: Record<string, unknown>; repos?: Record<string, unknown>[]; targets?: Record<string, Record<string, unknown>> } & Record<string, unknown>;
 type Key =
+  | { kind: "worktree" }
   | { kind: "limit"; name: "max_jobs" | "max_run_minutes" }
   | { kind: "repo"; alias: string; field: string | null }
   | { kind: "target"; name: string; field: string[] | null };
@@ -47,6 +49,7 @@ const TARGET_FIELDS = ["models.default", "models.allowed", "effort.default", "ef
 
 // Aliases may contain dots (a repository named outsrc.ing), so the field is matched from the end.
 export function parseKey(key: string): Key {
+  if (key === "worktree.command") return { kind: "worktree" };
   if (key === "limits.max_jobs" || key === "limits.max_run_minutes") return { kind: "limit", name: key.slice("limits.".length) as "max_jobs" | "max_run_minutes" };
   for (const [prefix, fields, kind] of [["repos.", REPO_FIELDS, "repo"], ["targets.", TARGET_FIELDS, "target"]] as const) {
     if (!key.startsWith(prefix) || key.length === prefix.length) continue;
@@ -77,6 +80,12 @@ function gitTop(path: string): string {
 }
 
 function apply(document: Document, key: Key, value: unknown | undefined): void {
+  if (key.kind === "worktree") {
+    const worktree = { ...(document.worktree ?? {}) };
+    if (value === undefined) delete worktree.command; else worktree.command = value;
+    if (Object.keys(worktree).length) document.worktree = worktree; else delete document.worktree;
+    return;
+  }
   if (key.kind === "limit") {
     const limits = { ...(document.limits ?? {}) };
     if (value === undefined) delete limits[key.name]; else limits[key.name] = value;
@@ -129,7 +138,7 @@ function apply(document: Document, key: Key, value: unknown | undefined): void {
 function risk(key: string, value: unknown): string | null {
   if ((key === "limits.max_jobs" || key === "limits.max_run_minutes") && value === "unlimited") return RISKS[key];
   if (key.endsWith(".permissions") && value === "auto") return RISKS["permissions.auto"];
-  if (key.endsWith(".command")) return RISKS.command;
+  if (key.startsWith("targets.") && key.endsWith(".command")) return RISKS.command;
   return null;
 }
 
@@ -160,6 +169,7 @@ export function listSettings(configPath: string) {
   const limits = resolveLimits(config.limits);
   return {
     config_path: configPath,
+    worktree: { command: config.worktree?.command ?? "git" },
     limits: { max_jobs: limits.maxJobs ?? "unlimited", max_run_minutes: limits.maxRunMinutes ?? "unlimited" },
     repos: config.repos.map((repo) => ({
       alias: repo.alias, path: repo.path, setup: repo.setup ?? [], auto_commit: repo.autoCommit ?? false, retention_days: repo.retentionDays ?? null,
