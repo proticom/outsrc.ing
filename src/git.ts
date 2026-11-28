@@ -25,8 +25,8 @@ function gitCowFailureReason(error: unknown): string {
 }
 
 type GitCowResult = { kind: "created" } | { kind: "failed"; reason: string };
-type GitCowInternalOptions = { killGroup?: (pid: number, signal: NodeJS.Signals) => void };
-type ActiveGitCow = { cleanup: () => void; interrupt: (error: Error) => void; watch?: NodeJS.Timeout };
+type GitCowInternalOptions = { killGroup?: (pid: number, signal: NodeJS.Signals) => void; psPath?: string };
+type ActiveGitCow = { cleanup: () => void; interrupt: (error: Error) => void; psPath: string; watch?: NodeJS.Timeout };
 const activeGitCow = new Map<number, ActiveGitCow>();
 const gitCowSignalHandlers: { signal: NodeJS.Signals; handler: () => void }[] = [];
 
@@ -57,16 +57,21 @@ function gitCowGroupAlive(pid: number): boolean {
   }
 }
 
-function gitCowGroupExited(pid: number, error: unknown): boolean {
+function gitCowGroupExited(pid: number, error: unknown, psPath: string): boolean {
   if (!(error instanceof Error && "code" in error)) return false;
   if (error.code === "ESRCH") return true;
   if (error.code !== "EPERM") return false;
   try {
-    const table = execFileSync("ps", ["-A", "-o", "pgid=,stat="], { encoding: "utf8", stdio: "pipe", timeout: 200 });
-    return table.trim().split("\n").every((line) => {
+    const table = execFileSync(psPath, ["-A", "-o", "pgid=,stat="], { encoding: "utf8", stdio: "pipe", timeout: 200 });
+    let foundGroup = false;
+    for (const line of table.trim().split("\n")) {
       const [, group, status] = /^\s*(\d+)\s+(\S+)\s*$/.exec(line) ?? [];
-      return group !== undefined && status !== undefined && (Number(group) !== pid || status.startsWith("Z"));
-    });
+      if (group === undefined || status === undefined) return false;
+      if (Number(group) !== pid) continue;
+      if (!status.startsWith("Z")) return false;
+      foundGroup = true;
+    }
+    return foundGroup;
   } catch { return false; }
 }
 
@@ -75,14 +80,14 @@ function stopGitCowAttempts(reason: string): void {
   for (const [pid] of attempts) { try { process.kill(-pid, "SIGTERM"); } catch {} }
   const deadline = Date.now() + 1000;
   const wait = new Int32Array(new SharedArrayBuffer(4));
-  while (Date.now() < deadline && attempts.some(([pid]) => {
+  while (Date.now() < deadline && attempts.some(([pid, attempt]) => {
     try { return gitCowGroupAlive(pid); }
-    catch (error) { return !gitCowGroupExited(pid, error); }
+    catch (error) { return !gitCowGroupExited(pid, error, attempt.psPath); }
   })) Atomics.wait(wait, 0, 0, 20);
   const stopped = new Set<number>();
-  for (const [pid] of attempts) {
+  for (const [pid, attempt] of attempts) {
     try { process.kill(-pid, "SIGKILL"); stopped.add(pid); }
-    catch (error) { if (gitCowGroupExited(pid, error)) stopped.add(pid); }
+    catch (error) { if (gitCowGroupExited(pid, error, attempt.psPath)) stopped.add(pid); }
   }
   for (const [pid, attempt] of attempts) {
     if (stopped.has(pid)) {
@@ -181,7 +186,7 @@ async function runGitCow(opts: { repo: string; args: string[]; timeoutMs: number
       }, 2000);
     };
     const timer = setTimeout(() => terminate("git-cow timed out"), opts.timeoutMs);
-    if (pid !== undefined) trackGitCow(pid, { cleanup: opts.cleanup, interrupt: (error) => finish({ kind: "signal-error", error }) });
+    if (pid !== undefined) trackGitCow(pid, { cleanup: opts.cleanup, interrupt: (error) => finish({ kind: "signal-error", error }), psPath: opts.internal?.psPath ?? "/bin/ps" });
     child.once("error", (error) => finish({ kind: "failed", reason: gitCowFailureReason(error) }));
     child.once("exit", (status, signal) => {
       if (phase !== "running") return;
