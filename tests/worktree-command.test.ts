@@ -23,7 +23,7 @@ const realGit = executable("git");
 const sessionTool = executable("perl") ?? executable("python3");
 const sleep = executable("sleep");
 const canInspectProcessGroups = (() => {
-  try { execFileSync("ps", ["-A", "-o", "pgid=,stat="], { stdio: "pipe", timeout: 200 }); return true; }
+  try { execFileSync("/bin/ps", ["-A", "-o", "pgid=,stat="], { stdio: "pipe", timeout: 200 }); return true; }
   catch { return false; }
 })();
 const roots: string[] = [];
@@ -89,15 +89,17 @@ function expectWorktree(f: ReturnType<typeof fixture>) {
 }
 
 describe("worktree commands", () => {
-  test.skipIf(process.platform === "win32").for(["SIGTERM", "SIGINT", "SIGHUP", "exit", "listener", "handled", "late", "late-prepended", "removed", "denied-exit", "concurrent", "term-honoring", "ps-zombies", "ps-absent", "ps-live-member", "ps-failed", "ps-malformed", "ps-empty"])("sender shutdown %s preserves exit semantics and scopes cleanup", async (mode, context) => {
-    if (mode === "term-honoring" && process.platform === "darwin" && !canInspectProcessGroups) context.skip("ps is unavailable; macOS zombie-group cleanup cannot be verified");
-    const snapshot = mode.startsWith("ps-");
+  test.skipIf(process.platform === "win32").for(["SIGTERM", "SIGINT", "SIGHUP", "exit", "listener", "handled", "late", "late-prepended", "removed", "denied-exit", "concurrent", "term-honoring", "ps-path-shadow", "ps-zombies", "ps-absent", "ps-live-member", "ps-failed", "ps-malformed", "ps-empty"])("sender shutdown %s preserves exit semantics and scopes cleanup", async (mode, context) => {
+    const shadowedPs = mode === "ps-path-shadow";
+    if ((shadowedPs || (mode === "term-honoring" && process.platform === "darwin")) && !canInspectProcessGroups) context.skip("/bin/ps cannot run; real process-group state cannot be verified");
+    const snapshot = mode.startsWith("ps-") && !shadowedPs;
     if (snapshot && process.platform !== "darwin") context.skip("requires macOS zombie-group EPERM behavior");
     const f = fixture(mode === "term-honoring" || snapshot ? "term-honoring" : "timeout");
-    const cleanup = !snapshot || mode === "ps-zombies" || mode === "ps-absent";
-    if (snapshot) {
-      rmSync(join(f.bin, "ps"), { force: true });
-      writeFileSync(join(f.bin, "ps"), `#!${process.execPath}\n
+    const cleanup = (!snapshot && !shadowedPs) || mode === "ps-zombies";
+    const psPath = join(f.bin, snapshot ? "snapshot-ps" : "ps");
+    if (snapshot || shadowedPs) {
+      rmSync(psPath, { force: true });
+      writeFileSync(psPath, `#!${process.execPath}\n
         const { appendFileSync, readFileSync } = require('node:fs');
         const { join } = require('node:path');
         const pid = Number(readFileSync(join(__dirname, 'pgid'), 'utf8'));
@@ -121,11 +123,14 @@ describe("worktree commands", () => {
     const script = `
       import { appendFileSync, writeFileSync } from 'node:fs';
       import { addWorktree } from ${JSON.stringify(new URL("../src/git.ts", import.meta.url).href)};
-      const [attempts, mode, outcomes, handled, pgidFile] = JSON.parse(process.argv[1]);
+      const [attempts, mode, outcomes, handled, pgidFile, psPath] = JSON.parse(process.argv[1]);
       if (mode.startsWith('ps-')) {
         const kill = process.kill.bind(process);
         process.kill = (pid, signal) => {
-          if (pid < 0) writeFileSync(pgidFile, String(-pid));
+          if (pid < 0) {
+            writeFileSync(pgidFile, String(-pid));
+            if (mode === 'ps-path-shadow') throw Object.assign(new Error('group signal denied'), { code: 'EPERM' });
+          }
           return kill(pid, signal);
         };
       }
@@ -136,6 +141,7 @@ describe("worktree commands", () => {
       if (mode === 'listener' || mode === 'handled' || mode === 'removed') process.once('SIGTERM', listener);
       if (mode === 'exit') process.stdin.once('data', () => process.exit(37));
       const pending = Promise.all(attempts.map(async (attempt) => {
+        if (psPath !== null) attempt.internal = { psPath };
         if (mode === 'denied-exit') attempt.internal = { killGroup: () => { throw Object.assign(new Error('group signal denied'), { code: 'EPERM' }); } };
         try { appendFileSync(outcomes, await addWorktree(attempt)); }
         catch (error) {
@@ -148,7 +154,7 @@ describe("worktree commands", () => {
       if (mode === 'removed') process.off('SIGTERM', listener);
       await pending;
     `;
-    const sender = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script, JSON.stringify([attempts, mode, outcomes, handled, join(f.bin, "pgid")])], {
+    const sender = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script, JSON.stringify([attempts, mode, outcomes, handled, join(f.bin, "pgid"), snapshot ? psPath : null])], {
       env: { ...process.env, OUTSRC_GIT_COW_TIMEOUT_MS: mode === "denied-exit" ? "1000" : "600000" }, stdio: ["pipe", "ignore", "pipe"],
     });
     let stderr = "";
@@ -168,10 +174,15 @@ describe("worktree commands", () => {
       expect(await exited).toEqual(mode === "listener" || mode === "exit" || mode === "denied-exit" ? { code: 37, signal: null }
         : mode === "handled" || mode === "late" || mode === "late-prepended" ? { code: 0, signal: null } : { code: null, signal });
       expect(stderr).toBe("");
+      if (shadowedPs) expect(existsSync(join(f.bin, "ps-calls.jsonl"))).toBe(false);
       if (mode === "listener" || mode === "handled" || mode === "late" || mode === "late-prepended") expect(readFileSync(handled, "utf8")).toBe("handled once\n");
       if (mode === "handled" || mode === "late" || mode === "late-prepended") expect(readFileSync(outcomes, "utf8")).toBe("git-cow interrupted by SIGTERM\n");
       if (mode === "denied-exit") expect(readFileSync(outcomes, "utf8")).toBe("group signal denied\n");
       for (const { stub, child } of groups()) {
+        if (shadowedPs) {
+          for (const pid of [stub, child]) expect(process.kill(pid, 0)).toBe(true);
+          continue;
+        }
         for (const pid of [stub, child]) await expect.poll(() => {
           try { process.kill(pid, 0); return "alive"; }
           catch (error) { return error instanceof Error && "code" in error ? error.code : "unknown"; }
